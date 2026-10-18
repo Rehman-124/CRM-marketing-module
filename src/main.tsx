@@ -4,8 +4,10 @@ import { BrowserRouter } from 'react-router-dom'
 import './index.css'
 import App from './App'
 import { startClock } from './store/store'
+import { initMessaging } from './messaging/service'
 
 startClock()
+initMessaging()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

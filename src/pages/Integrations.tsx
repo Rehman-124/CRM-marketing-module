@@ -1,6 +1,7 @@
 import { PlugZap, FlaskConical, CircleDashed, AlertOctagon, CheckCircle2, ShieldAlert, Globe, KeyRound, LifeBuoy, ListX, Repeat2, Info } from 'lucide-react'
 import { Badge, Callout, Card, CardHeader, EmptyState, PageHeader, SimTag, th, td, cn } from '@/components/ui'
 import { CompanyTag, ConnectionStateBadge } from '@/components/domain'
+import { MessagingStatusCard } from '@/components/inbox/MessagingStatusCard'
 import { useAppData } from '@/store/store'
 import { CONNECTION_LABEL, CONNECTION_STATE_LABEL } from '@/domain/constants'
 import { companyName } from '@/domain/engine'
@@ -131,6 +132,8 @@ export default function IntegrationsPage() {
           </div>
         </Card>
       </div>
+
+      <div className="mt-5"><MessagingStatusCard /></div>
 
       <Card className="mt-5">
         <CardHeader icon={Info} title="Connection states" description="Every state a connection can show in this prototype" />

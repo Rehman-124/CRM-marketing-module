@@ -27,6 +27,7 @@ const TYPE: Record<AuditType, { label: string; tone: Tone }> = {
   'first-contact': { label: 'First contact', tone: 'green' },
   integration: { label: 'Integration', tone: 'red' },
   'sla-alert': { label: 'SLA alert', tone: 'red' },
+  message: { label: 'Message sent', tone: 'sky' },
 }
 const PAGE = 40
 

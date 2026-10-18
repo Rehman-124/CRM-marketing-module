@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ClipboardCheck, ChevronDown, ChevronRight, ArrowUpRight, CircleDashed, SlidersHorizontal, GitCompareArrows, HelpCircle } from 'lucide-react'
+import { ClipboardCheck, ChevronDown, ChevronRight, ArrowUpRight, CircleDashed, SlidersHorizontal, GitCompareArrows, HelpCircle, UserCheck } from 'lucide-react'
 import { Badge, Callout, Card, CardHeader, Input, PageHeader, PendingTag, Select, Switch, Textarea, td, cn } from '@/components/ui'
 import { useAppData, useRun } from '@/store/store'
-import { FRS, INTERPRETATIONS, OPEN_DECISIONS } from '@/domain/spec'
+import { FRS, INTERPRETATIONS, OPEN_DECISIONS, OWNER_DECISIONS } from '@/domain/spec'
 import { FIELD_LABEL, STANDARD_FIELDS } from '@/domain/constants'
 import type { PendingDecisionParams } from '@/domain/types'
 
@@ -140,6 +140,17 @@ export default function RequirementsPage() {
                 <Input aria-label="Active-lead capacity" type="number" min={1} max={50} value={p.capacity} onChange={(e) => { const n = Number(e.target.value); if (Number.isInteger(n) && n >= 1 && n <= 50) setParam('capacity', n) }} className="h-8 w-20" />
               </div>
             </div>
+          </Card>
+
+          <Card>
+            <CardHeader icon={UserCheck} title="Product-owner decisions outside the FRD" description="Taken for the inbox reply feature, which the FRD does not cover." />
+            <table className="w-full">
+              <tbody className="divide-y divide-slate-100">
+                {OWNER_DECISIONS.map((d) => (
+                  <tr key={d.topic}><td className={cn(td, 'w-36 align-top font-medium text-slate-800')}>{d.topic}<span className="block text-[11px] font-normal text-slate-500">{d.date}</span></td><td className={cn(td, 'text-[12.5px] text-slate-600')}>{d.text}</td></tr>
+                ))}
+              </tbody>
+            </table>
           </Card>
 
           <Card>

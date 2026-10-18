@@ -286,18 +286,27 @@ export interface NewEnquiryInput {
   text: string
   postContext?: string
   externalEventId?: string
+  /** Defaults to 'simulated'. Only threads created from real Meta webhooks are 'live'. */
+  origin?: 'live' | 'simulated'
+  platformUserId?: string
+  commentId?: string
+  /** Meta message / comment id of the first message */
+  messageExternalId?: string
+  at?: number
 }
 
 export function createEnquiry(S: AppData, input: NewEnquiryInput): Enquiry {
-  const t = S.clock.now
+  const t = input.at ?? S.clock.now
+  const isComment = input.channel.endsWith('comment')
+  const token = (S.seq * 7919 + 104729).toString(36)
   const e: Enquiry = {
     id: nextId(S, 'eq'),
     ref: `EQ-${7000 + S.enquiries.length + 1}`,
     companyId: input.companyId,
     channel: input.channel,
     handle: input.handle,
-    conversationRef: `${input.channel.startsWith('facebook') ? 'fb' : 'ig'}_${input.channel.endsWith('dm') ? 'thread' : 'comment'}_${(S.seq * 7919 + 104729).toString(36)}`,
-    messages: [{ from: 'customer', text: input.text, at: t }],
+    conversationRef: `${input.channel.startsWith('facebook') ? 'fb' : 'ig'}_${isComment ? 'comment' : 'thread'}_${token}`,
+    messages: [{ id: nextId(S, 'msg'), from: 'customer', kind: isComment ? 'comment' : 'dm', text: input.text, at: t, externalId: input.messageExternalId }],
     fields: { nationality: '', fullName: '', phone: '', email: '', city: '', tripDetails: '' },
     read: false,
     status: 'open',
@@ -306,6 +315,12 @@ export function createEnquiry(S: AppData, input: NewEnquiryInput): Enquiry {
     convertedByUserId: null,
     createdAt: t,
     postContext: input.postContext,
+    origin: input.origin ?? 'simulated',
+    platformUserId: input.platformUserId ?? `sim_${input.channel.startsWith('facebook') ? 'psid' : 'igsid'}_${token}`,
+    commentId: isComment ? (input.commentId ?? `sim_comment_${token}`) : undefined,
+    privateReplyAt: isComment ? null : undefined,
+    lastInboundDmAt: isComment ? null : t,
+    lastActivityAt: t,
   }
   S.enquiries.push(e)
   return e

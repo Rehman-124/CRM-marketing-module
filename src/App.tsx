@@ -9,7 +9,6 @@ import {
 } from './domain/permissions'
 import { PermissionDenied, NotFound } from './pages/Errors'
 import InboxPage from './pages/Inbox'
-import EnquiryDetailPage from './pages/EnquiryDetail'
 import LeadsPage from './pages/Leads'
 import LeadDetailPage from './pages/LeadDetail'
 import NewLeadPage from './pages/NewLead'
@@ -41,7 +40,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/inbox" element={<Guard allow={(_S, u) => canViewInbox(u)}><InboxPage /></Guard>} />
-        <Route path="/inbox/:id" element={<Guard allow={(_S, u) => canViewInbox(u)}><EnquiryDetailPage /></Guard>} />
+        <Route path="/inbox/:id" element={<Guard allow={(_S, u) => canViewInbox(u)}><InboxPage /></Guard>} />
         <Route path="/leads" element={<Guard allow={(_S, u) => u.role !== 'agent'}><LeadsPage /></Guard>} />
         <Route path="/leads/new" element={<Guard allow={(S, u) => canCreateManualLead(S, u)}><NewLeadPage /></Guard>} />
         <Route path="/leads/:id" element={<LeadDetailPage />} />

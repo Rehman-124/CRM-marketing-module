@@ -170,6 +170,19 @@ export function DemoConsole({ open, onClose }: { open: boolean; onClose: () => v
         }}>Refresh Meta insights now</Button>
       </Section>
 
+      <Section title="Messaging simulation" description="Applies to simulated conversations only. Real conversations (from Meta webhooks) always go through the messaging server.">
+        <label htmlFor="sim-outcome" className="mb-1.5 block text-[12.5px] font-medium text-slate-700">Outcome of the next simulated reply</label>
+        <Select id="sim-outcome" value={S.messagingSim.nextOutcome} onChange={(e) => run((d) => { d.messagingSim.nextOutcome = e.target.value as AppData['messagingSim']['nextOutcome'] })}>
+          <option value="success">Sent successfully</option>
+          <option value="rate_limited">Fails: rate limited (retryable)</option>
+          <option value="network">Fails: network error (retryable)</option>
+          <option value="token_invalid">Fails: page token expired</option>
+          <option value="permission_missing">Fails: permission missing</option>
+          <option value="recipient_unavailable">Fails: client unavailable</option>
+        </Select>
+        <p className="mt-1.5 text-[11.5px] text-slate-500">Resets to “Sent successfully” after one use. To show the connection-error state, use “Simulate failure” on Facebook/Instagram inbox & engagement above. In an open simulated conversation, “Simulate client message” makes the client write in.</p>
+      </Section>
+
       <Section title="Demo data">
         <Callout tone="neutral" icon={Info}>Data is stored in this browser only. Resetting rebuilds the demo history (1 Sep – 17 Oct 2026) and the clock.</Callout>
         <Button size="sm" variant="danger" icon={RotateCcw} className="mt-3 w-full" onClick={() => {

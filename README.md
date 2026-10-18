@@ -8,17 +8,19 @@ Implements the *Trip2Go CRM — Marketing Functional Requirements & Acceptance C
 ```bash
 npm install
 npm run dev        # http://localhost:5173
-npm test           # 24 engine tests mapped to acceptance criteria
+npm run server     # optional: messaging server for live Meta replies (see docs/messaging.md)
+npm test           # 50 tests: engine (acceptance criteria), messaging rules, messaging server
 npm run build      # type-check + production build into dist/
 ```
 
-Requires Node 20+. Data is kept in the browser's localStorage. **Demo console → Reset demo data** restores the starting state.
+Requires Node 20+ for the app; the messaging server needs Node 22.18+ (it runs TypeScript directly). Data is kept in the browser's localStorage. **Demo console → Reset demo data** restores the starting state.
 
 ## What is real and what is simulated
 
 | Real in the prototype | Simulated (labelled in the UI) |
 |---|---|
 | Distribution engine (eligibility → fairness), SLA clock, absence release, manual controls, permissions, reports — all computed live from one data model | Meta webhooks, inbox and insights (proof-of-concept data shape), website forms, connection failures and recovery, the PKT clock, the user/role switcher |
+| Inbox replies: composer, reply windows, delivery states, retry, and a messaging server that sends through the Meta Graph API | Every demo conversation and its replies (labelled “Simulated — not sent to Meta”). Live replies need Meta credentials and App Review — see [docs/messaging.md](docs/messaging.md) |
 
 No connection is shown as production-confirmed; all are **Pending** (AC-P3-003-3).
 
@@ -26,7 +28,8 @@ No connection is shown as production-confirmed; all are **Pending** (AC-P3-003-3
 
 The clock starts at **Sat 17 Oct 2026, 15:10 PKT** (shift time). Use **View the CRM as…** (top right) to switch role.
 
-1. **Marketing (Hamza Qureshi) → Marketing Inbox.** Open “Can I know more?”, click *Convert to Lead* to show the missing-fields error, fill in the fields, then convert. The Lead is assigned automatically.
+1. **Marketing (Hamza Qureshi) → Marketing Inbox.** Open “Can I know more?” and reply from the composer (watch it go Sending → Sent → Seen). In the details pane, click *Convert to Lead* to show the missing-fields error, fill in the fields, then convert. The Lead is assigned automatically and the conversation stays open.
+   Also show a comment thread (private vs public reply), the 24-hour window on an older thread, and a failed send with Retry (Demo console → Messaging simulation).
 2. **Admin (Sana Malik) → Distribution & SLA.** Fairness scores (count + offset; Noor Fatima is a mid-month new agent), pending Leads, two live SLA alerts, and the manual-change history.
 3. **Open an SLA alert Lead.** Read *Why this assignment?* (Absent → Unavailable → capacity → lowest score), then **Reassign** it and check the ownership history.
 4. **Team & shift.** Mark an agent Absent: their pending off-time Leads are released and redistributed.
@@ -42,7 +45,10 @@ Every pending FRD decision is a visible placeholder (dashed amber **Pending** ta
 ## Structure
 
 ```
-src/domain/    engine.ts (business rules), permissions.ts, reports.ts, insights.ts, seed.ts, spec.ts, types.ts
+src/domain/    engine.ts (business rules), messaging.ts (reply rules), permissions.ts, reports.ts, insights.ts, seed.ts, spec.ts, types.ts
+src/messaging/ contract shared with the server, live transport (HTTP + event stream), simulated transport
+server/        messaging server: Meta webhooks, Graph API client, send proxy (Node, no framework)
+docs/          messaging.md — how to switch on live Meta messaging
 src/store/     zustand store (single AppData), simulated clock, hooks
 src/components ui primitives, app shell, demo console, lead widgets
 src/pages/     one file per screen

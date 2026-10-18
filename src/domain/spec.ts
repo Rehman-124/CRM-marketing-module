@@ -14,7 +14,7 @@ export interface FR {
 export const FRS: FR[] = [
   {
     id: 'P1-FR-001', title: 'Lead Capture, Attribution & Social Qualification', phase: 1, priority: 'Must Have', route: '/inbox',
-    where: 'Marketing Inbox, Enquiry detail, New manual lead, Lead detail · Demo console → Simulate an incoming enquiry',
+    where: 'Marketing Inbox (conversation list, thread, client details with Convert to Lead), New manual lead, Lead detail · Demo console → Simulate an incoming enquiry',
     acs: [
       { id: 'AC-P1-001-1', text: 'A submitted Meta Instant Form creates a Lead with its company, and its campaign and ad where Meta provides them.' },
       { id: 'AC-P1-001-2', text: 'A website form, phone call or manual email enquiry creates a Lead.' },
@@ -189,6 +189,14 @@ export const OPEN_DECISIONS: { group: string; items: { id: string; text: string;
 ]
 
 /** Ambiguities found while implementing — interpretations used in the prototype. */
+/** Decisions taken by the product owner for features the FRD does not cover. */
+export const OWNER_DECISIONS: { date: string; topic: string; text: string }[] = [
+  { date: '18 Oct 2026', topic: 'Who replies from the inbox', text: 'Marketing employees for their assigned companies, and the Admin / CRM Manager for any company. View-only users, Team Leads and Sales Agents can read but not reply.' },
+  { date: '18 Oct 2026', topic: 'After conversion', text: 'The conversation stays open for replies after the enquiry is converted to a Lead.' },
+  { date: '18 Oct 2026', topic: 'Comment replies', text: 'Both Meta’s one private reply (within 7 days) and public replies under the comment are allowed.' },
+  { date: '18 Oct 2026', topic: 'Messaging server', text: 'A Node messaging server in this repository holds the Meta tokens; the CRM never sees them.' },
+]
+
 export const INTERPRETATIONS: { topic: string; text: string }[] = [
   { topic: 'Active-lead capacity', text: '“Unresolved leads held at one time” is read as assigned Leads with no first contact yet that are not Booked or Lost (“until they deal with some”). Confirm the definition.' },
   { topic: 'Absent and the SLA', text: 'An agent marked Absent is not treated as Available, so their SLA timers do not run.' },

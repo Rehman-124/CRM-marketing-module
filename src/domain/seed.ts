@@ -4,10 +4,10 @@
 import { COMPANIES, DEFAULT_PARAMS, EMPTY_FIELDS } from './constants'
 import * as E from './engine'
 import { refreshInsights, mulberry32 } from './insights'
-import type { Ad, AppData, Campaign, CompanyId, Connection, CustomerFields, EnquiryChannel, Lead, User } from './types'
+import type { Ad, AppData, Campaign, CompanyId, Connection, CustomerFields, Enquiry, EnquiryChannel, Lead, MessageStatus, User } from './types'
 import { DAY, HOUR, MIN, fromPkt, isShiftTime, nextShiftStart, pktDayStart } from '../lib/time'
 
-export const DATA_VERSION = 3
+export const DATA_VERSION = 4
 export const SEED_START = fromPkt(2026, 9, 1)
 export const SEED_NOW = fromPkt(2026, 10, 17, 15, 10)
 
@@ -117,6 +117,7 @@ export function createBaseData(): AppData {
     leads: [], enquiries: [], assignments: [], offsets: [], tieRotation: {},
     audit: [], notifications: [], connections, externalEvents: [], failedEvents: [], insights: [],
     metaLastRefreshedAt: null, metaAvailable: true,
+    messagingSim: { nextOutcome: 'success' },
     params: structuredClone(DEFAULT_PARAMS),
     clock: { now: SEED_START, running: false, speed: 1 },
     seq: 100,
@@ -141,6 +142,19 @@ export function buildSeed(): AppData {
 
   const person = (c: CompanyId) => makePerson(c, rnd)
   const marketingFor = (c: CompanyId) => S.users.find((u) => u.role === 'marketing' && u.companyIds.includes(c))!.id
+  // Seeded conversation history (simulated: none of it went through Meta)
+  const out = (S: AppData, e: Enquiry, text: string, t: number, by: string, kind: 'dm' | 'private-reply' | 'public-reply' = 'dm', status: MessageStatus = 'read', via: 'crm' | 'meta' = 'crm') => {
+    e.messages.push({ id: E.nextId(S, 'msg'), from: 'marketing', kind, text, at: t, byUserId: via === 'crm' ? by : undefined, via, status, externalId: `sim_mid_${S.seq}`, simulated: true })
+    if (kind === 'private-reply') e.privateReplyAt = t
+    e.lastActivityAt = Math.max(e.lastActivityAt, t)
+  }
+  const inn = (S: AppData, e: Enquiry, text: string, t: number) => {
+    e.messages.push({ id: E.nextId(S, 'msg'), from: 'customer', kind: 'dm', text, at: t, externalId: `sim_mid_${S.seq}` })
+    e.lastInboundDmAt = t
+    e.lastActivityAt = Math.max(e.lastActivityAt, t)
+  }
+  const ASK = 'Thanks for getting in touch! Could you share your full name, nationality and best contact number?'
+  const ASK_PRIVATE = 'Hi! Thanks for your comment — could you share your full name, nationality and best contact number so we can send you the details?'
 
   // ----- outcome chain after a Lead is created
   const followUps = (lead: Lead, createdAt: number, forceUncontacted = false) => {
@@ -262,8 +276,8 @@ export function buildSeed(): AppData {
             if (!e) return
             const mk = marketingFor(c.id)
             e.read = true
-            e.messages.push({ from: 'marketing', text: channel.endsWith('comment') ? 'Thanks for your interest! We’ve sent you a private message to take your details.' : 'Thanks for getting in touch! Could you share your full name, nationality and best contact number?', at: S.clock.now - 6 * MIN })
-            e.messages.push({ from: 'customer', text: `${fields.fullName}, ${fields.nationality}, ${fields.phone}. ${fields.tripDetails}`.trim(), at: S.clock.now - 2 * MIN })
+            out(S, e, channel.endsWith('comment') ? ASK_PRIVATE : ASK, S.clock.now - 6 * MIN, mk, channel.endsWith('comment') ? 'private-reply' : 'dm')
+            inn(S, e, `${fields.fullName}, ${fields.nationality}, ${fields.phone}. ${fields.tripDetails}`.trim(), S.clock.now - 2 * MIN)
             e.fields = { ...fields }
             const res = E.convertEnquiry(S, e.id, mk)
             if (res.ok && res.id) followUps(S.leads.find((l) => l.id === res.id)!, t, recentUncontacted)
@@ -354,6 +368,7 @@ export function buildSeed(): AppData {
 
   // Open (unconverted) social enquiries for the Marketing Inbox
   const openEnquiries: [CompanyId, EnquiryChannel, string, number, boolean][] = [
+    ['trip2go', 'facebook_dm', 'Hello, do you still have the Maldives offer?', 26 * 60, true],
     ['flightnest', 'instagram_dm', 'Can I know more?', 22, false],
     ['flightnest', 'facebook_comment', 'Price for Lahore in December?', 48, false],
     ['holidaynest', 'facebook_dm', 'Hi, is the Dubai deal available over Christmas? Family of 4.', 75, true],
@@ -368,11 +383,25 @@ export function buildSeed(): AppData {
       const fields = person(c)
       const cmp = S.campaigns.find((x) => x.companyId === c)
       const e = E.createEnquiry(S, { companyId: c, channel, handle: `@${fields.fullName.toLowerCase().replace(' ', '_')}`, text, postContext: channel.endsWith('comment') && cmp ? `Comment on post: “${cmp.name}”` : undefined })
+      const mk = marketingFor(c)
       if (partial) {
         e.read = true
-        e.messages.push({ from: 'marketing', text: 'Thanks for reaching out! Could you share your full name, nationality and a contact number?', at: S.clock.now + 4 * MIN })
-        e.messages.push({ from: 'customer', text: `It's ${fields.fullName}.`, at: S.clock.now + 9 * MIN })
+        const isComment = channel.endsWith('comment')
+        out(S, e, isComment ? ASK_PRIVATE : ASK, S.clock.now + 4 * MIN, mk, isComment ? 'private-reply' : 'dm', 'read')
+        inn(S, e, `It's ${fields.fullName}.`, S.clock.now + 9 * MIN)
         e.fields = { ...EMPTY_FIELDS, fullName: fields.fullName }
+        if (c === 'holidaynest' && channel === 'facebook_dm') {
+          // A reply sent from Meta Business Suite, synced into the CRM thread
+          out(S, e, 'Yes, Christmas dates are available — a colleague will share prices shortly.', S.clock.now + 12 * MIN, mk, 'dm', 'delivered', 'meta')
+        }
+        if (c === 'schengentravel' && channel === 'facebook_comment') {
+          out(S, e, 'Usually 10–15 working days. We’ve sent you a private message with the details!', S.clock.now + 5 * MIN, mk, 'public-reply', 'sent')
+        }
+      }
+      if (c === 'travelope' && channel === 'facebook_dm') {
+        e.read = true
+        e.messages.push({ id: E.nextId(S, 'msg'), from: 'marketing', kind: 'dm', text: 'Hi! Which month are you planning to travel, and how many travellers?', at: S.clock.now + 3 * MIN, byUserId: mk, via: 'crm', status: 'failed', simulated: true, error: { code: 'rate_limited', message: 'Meta is rate-limiting this page. Try again shortly.', retryable: true } })
+        e.lastActivityAt = S.clock.now + 3 * MIN
       }
     })
   }
