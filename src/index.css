@@ -1,0 +1,54 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --color-brand-50: #eef4ff;
+  --color-brand-100: #dbe6fe;
+  --color-brand-200: #bfd3fe;
+  --color-brand-300: #93b4fd;
+  --color-brand-400: #608bfa;
+  --color-brand-500: #3b66f5;
+  --color-brand-600: #2549ea;
+  --color-brand-700: #1d37d7;
+  --color-brand-800: #1e2fae;
+  --color-brand-900: #1e2d89;
+  --color-brand-950: #151d52;
+  --color-ink-950: #0b1220;
+  /* Slate greys darkened so secondary text meets WCAG AA (4.5:1) on every light surface used */
+  --color-slate-400: #5f6f86;
+  --color-slate-500: #5b6b82;
+  /* Text on the dark sidebar */
+  --color-side-text: #a3b1c6;
+  --color-side-muted: #8193ad;
+  /* Slate greys darkened so secondary text meets WCAG AA (4.5:1) on every light surface used */
+  --color-slate-400: #5f6f86;
+  --color-slate-500: #5b6b82;
+  /* Text on the dark sidebar */
+  --color-side-text: #a3b1c6;
+  --color-side-muted: #8193ad;
+  --shadow-xs: 0 1px 2px 0 rgb(15 23 42 / 0.05);
+  --shadow-card: 0 1px 2px 0 rgb(15 23 42 / 0.04), 0 1px 3px 0 rgb(15 23 42 / 0.03);
+}
+
+@layer base {
+  html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+  body { @apply bg-slate-50 text-slate-800; font-feature-settings: "cv11", "ss01"; }
+  ::selection { background: var(--color-brand-100); }
+  .tabular { font-variant-numeric: tabular-nums; }
+}
+
+@keyframes fade { from { opacity: 0 } to { opacity: 1 } }
+@keyframes pop { from { opacity: 0; transform: translateY(6px) scale(.98) } to { opacity: 1; transform: none } }
+@keyframes slide { from { transform: translateX(24px); opacity: .4 } to { transform: none; opacity: 1 } }
+@keyframes pulse-ring { 0% { box-shadow: 0 0 0 0 rgb(244 63 94 / .45) } 70% { box-shadow: 0 0 0 6px rgb(244 63 94 / 0) } 100% { box-shadow: 0 0 0 0 rgb(244 63 94 / 0) } }
+@keyframes flash { from { background-color: rgb(219 230 254 / .9) } to { background-color: transparent } }
+.anim-fade { animation: fade .16s ease-out }
+.anim-pop { animation: pop .18s cubic-bezier(.2,.8,.2,1) }
+.anim-slide { animation: slide .22s cubic-bezier(.2,.8,.2,1) }
+.pulse-ring { animation: pulse-ring 1.8s infinite }
+.row-flash { animation: flash 1.4s ease-out }
+
+.scroll-thin::-webkit-scrollbar { width: 8px; height: 8px }
+.scroll-thin::-webkit-scrollbar-thumb { background: rgb(148 163 184 / .35); border-radius: 8px }
+.scroll-thin::-webkit-scrollbar-track { background: transparent }
