@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Play, Pause, FastForward, Sun, Moon, CalendarRange, FileText, Globe, MessageCircle, MessagesSquare, Repeat2, Zap, RotateCcw, RefreshCw, FileX, Info } from 'lucide-react'
+import { Play, Pause, FastForward, Sun, Moon, CalendarRange, FileText, Globe, MessageCircle, MessagesSquare, Repeat2, Zap, RotateCcw, RefreshCw, FileX, Info, PenLine, Smartphone } from 'lucide-react'
 import { Drawer, toast } from '../ui/overlay'
 import { Button, Select, Switch, SimTag, Callout, cn } from '../ui'
 import { useAppData, useRun, useStore } from '@/store/store'
@@ -9,7 +9,9 @@ import { refreshInsights } from '@/domain/insights'
 import { makePerson, SOCIAL_OPENERS } from '@/domain/seed'
 import { CONNECTION_LABEL } from '@/domain/constants'
 import type { AppData, CompanyId, ConnectionKind, EnquiryChannel, LeadSource } from '@/domain/types'
-import { HOUR, MIN, fmtDate, fmtTimeSec, isShiftTime, nextMonthStart, nextShiftEnd, nextShiftStart, fmtDow } from '@/lib/time'
+import { DAY, HOUR, MIN, fmtDate, fmtTimeSec, isShiftTime, nextShiftEnd, nextShiftStart, fmtDow } from '@/lib/time'
+import { leadOf, simulateSignature, simulateWhatsAppInbound } from '@/domain/sales'
+import { findOpp } from '@/domain/lookup'
 
 function Section({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
   return (
@@ -31,6 +33,9 @@ export function DemoConsole({ open, onClose }: { open: boolean; onClose: () => v
   const [company, setCompany] = useState<CompanyId>('flightnest')
   const [connId, setConnId] = useState('cn-flightnest-meta_forms')
   const [lastMeta, setLastMeta] = useState<{ company: CompanyId; payload: ExternalPayload } | null>(null)
+  const [bookingId, setBookingId] = useState('')
+  const [waOpp, setWaOpp] = useState('')
+  const [waText, setWaText] = useState('Hi, just checking on my application — any update?')
   const now = S.clock.now
   const shift = isShiftTime(now)
 
@@ -71,7 +76,7 @@ export function DemoConsole({ open, onClose }: { open: boolean; onClose: () => v
     }
     const l = d.leads.find((x) => x.id === res.recordId)
     if (!l) return
-    toast.success(`Lead ${l.ref} created`, l.ownerId ? `Assigned to ${userName(d, l.ownerId)}${isShiftTime(d.clock.now) ? '' : ' (off-time — no SLA)'}.` : 'No eligible agent — left Unassigned and the Manager was notified.')
+    toast.success(`Lead ${l.ref} created`, l.ownerId ? `Assigned to ${userName(d, l.ownerId)}${isShiftTime(d.clock.now) ? '' : ' (off-time — no SLA)'}.` : 'No agent could receive it — left Unassigned and Managers were notified.')
   }
 
   const conn = S.connections.find((c) => c.id === connId)!
@@ -109,7 +114,7 @@ export function DemoConsole({ open, onClose }: { open: boolean; onClose: () => v
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
           <Button size="sm" icon={Sun} onClick={() => jump(nextShiftStart(now), 'Shift start 14:00 PKT — mark any Absent agents on Team & shift')}>Shift start</Button>
           <Button size="sm" icon={Moon} onClick={() => jump(nextShiftEnd(now), 'Off-time from 22:00 PKT — Leads are assigned without an SLA')}>Off-time</Button>
-          <Button size="sm" icon={CalendarRange} onClick={() => jump(nextMonthStart(now) + 14 * HOUR + MIN, 'New month — fairness counts reset automatically')}>Next month</Button>
+          <Button size="sm" icon={CalendarRange} onClick={() => jump(now + DAY, '+1 day — scores carry across days (no reset)')}>+1 day</Button>
         </div>
       </Section>
 
@@ -183,8 +188,39 @@ export function DemoConsole({ open, onClose }: { open: boolean; onClose: () => v
         <p className="mt-1.5 text-[11.5px] text-slate-500">Resets to “Sent successfully” after one use. To show the connection-error state, use “Simulate failure” on Facebook/Instagram inbox & engagement above. In an open simulated conversation, “Simulate client message” makes the client write in.</p>
       </Section>
 
+      <Section title="Sales simulation" description="DigiSigner and company WhatsApp are pending technical validation. These buttons stand in for their webhooks; nothing is sent anywhere.">
+        <div className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2.5 ring-1 ring-slate-200">
+          <div>
+            <p className="text-[12.5px] font-medium text-slate-800">DigiSigner reachable</p>
+            <p className="text-[11.5px] text-slate-500">Turn off to show “Not generated” with a retry when a Booking is created.</p>
+          </div>
+          <Switch checked={S.salesConfig.digiSignerReachable} onChange={(v) => run((d) => { d.salesConfig.digiSignerReachable = v })} label="DigiSigner reachable" />
+        </div>
+        <label htmlFor="sim-booking" className="mt-3 mb-1.5 block text-[12.5px] font-medium text-slate-700">Customer signs the invoice/terms</label>
+        <div className="flex gap-2">
+          <Select id="sim-booking" value={bookingId} onChange={(e) => setBookingId(e.target.value)}>
+            <option value="">Choose an unsigned Booking…</option>
+            {S.bookings.filter((b) => b.invoice.status === 'sent').slice(-30).reverse().map((b) => <option key={b.id} value={b.id}>{b.ref} · {leadOf(S, findOpp(S, b.oppId)!).fields.fullName}</option>)}
+          </Select>
+          <Button size="md" icon={PenLine} disabled={!bookingId} onClick={() => { const r = run((d) => simulateSignature(d, bookingId)); if (r.ok) { toast.success('Invoice signed (simulated)', 'The Unsigned Invoice flag cleared. The Booking status did not change.'); setBookingId('') } else toast.error('Not signed', r.error) }}>Sign</Button>
+        </div>
+        <label htmlFor="sim-wa" className="mt-3 mb-1.5 block text-[12.5px] font-medium text-slate-700">Customer WhatsApp message to the company number</label>
+        <Select id="sim-wa" value={waOpp} onChange={(e) => setWaOpp(e.target.value)}>
+          <option value="">Choose an opportunity…</option>
+          {S.waThreads.slice().sort((a, b) => b.lastActivityAt - a.lastActivityAt).slice(0, 30).map((w) => { const o = findOpp(S, w.oppId)!; const l = leadOf(S, o); return <option key={w.id} value={o.id}>{l.fields.fullName} · {userName(S, l.ownerId)}</option> })}
+        </Select>
+        <div className="mt-2 flex gap-2">
+          <input aria-label="Customer message" value={waText} onChange={(e) => setWaText(e.target.value)} className="h-9 w-full rounded-lg px-3 text-sm ring-1 ring-slate-200 ring-inset focus:ring-2 focus:ring-brand-500 focus:outline-none" />
+          <Button size="md" icon={Smartphone} disabled={!waOpp || !waText.trim()} onClick={() => { run((d) => simulateWhatsAppInbound(d, waOpp, waText.trim())); toast.info('WhatsApp message received (simulated)', 'Visible only to the owning agent, and to Managers/Admins in the Company Inbox.') }}>Send</Button>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <Button size="sm" icon={FastForward} onClick={() => jump(now + 3 * DAY, '+3 days — invoice reminders run only if the periods are configured')}>+3 days</Button>
+          <Button size="sm" icon={FastForward} onClick={() => jump(now + 7 * DAY, '+7 days — invoice reminders run only if the periods are configured')}>+7 days</Button>
+        </div>
+      </Section>
+
       <Section title="Demo data">
-        <Callout tone="neutral" icon={Info}>Data is stored in this browser only. Resetting rebuilds the demo history (1 Sep – 17 Oct 2026) and the clock.</Callout>
+        <Callout tone="neutral" icon={Info}>Data is stored in this browser only. Resetting rebuilds the demo history (1 Sep – 17 Oct 2026, Marketing and Sales) and the clock.</Callout>
         <Button size="sm" variant="danger" icon={RotateCcw} className="mt-3 w-full" onClick={() => {
           if (!window.confirm('Reset all demo data to the starting state?')) return
           resetDemo(); navigate('/'); toast.success('Demo data reset')

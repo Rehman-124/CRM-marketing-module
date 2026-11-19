@@ -1,5 +1,5 @@
 // Time helpers. All business time is Pakistan Standard Time (UTC+5, no DST).
-// Shift time is 14:00–22:00 PKT; off-time is 22:00–14:00 PKT (P1-FR-004).
+// Shift time is 14:00–22:00 PKT; off-time is 22:00–14:00 PKT (P1-FR-003).
 
 export const MIN = 60_000
 export const HOUR = 60 * MIN
@@ -169,3 +169,72 @@ export function dateKeyToStart(k: string): number {
   const [y, m, d] = k.split('-').map(Number)
   return fromPkt(y, m, d)
 }
+
+// ---------- UK-local time (SAL-FR-001: contact tasks are created in UK-local time) ----------
+
+const UK_PARTS = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+
+const UK_CACHE = new Map<number, { y: number; m: number; d: number; h: number; min: number }>()
+/** Intl formatting is slow, so results are cached per minute (UK offsets change only on whole hours). */
+export function ukParts(t: number) {
+  const key = Math.floor(t / 60_000)
+  const hit = UK_CACHE.get(key)
+  if (hit) return hit
+  const p = Object.fromEntries(UK_PARTS.formatToParts(key * 60_000).map((x) => [x.type, x.value]))
+  const v = { y: Number(p.year), m: Number(p.month), d: Number(p.day), h: Number(p.hour), min: Number(p.minute) }
+  if (UK_CACHE.size > 20_000) UK_CACHE.clear()
+  UK_CACHE.set(key, v)
+  return v
+}
+
+/** Epoch for a UK wall-clock time (handles GMT/BST). */
+export function fromUK(y: number, m: number, d: number, h = 0, min = 0): number {
+  let guess = Date.UTC(y, m - 1, d, h, min)
+  for (let i = 0; i < 2; i++) {
+    const p = ukParts(guess)
+    const shown = Date.UTC(p.y, p.m - 1, p.d, p.h, p.min)
+    guess -= shown - Date.UTC(y, m - 1, d, h, min)
+  }
+  return guess
+}
+
+export function ukDateKey(t: number): string {
+  const p = ukParts(t)
+  return `${p.y}-${pad(p.m)}-${pad(p.d)}`
+}
+
+/** End of the UK calendar day containing t (a window task is overdue after its day ends). */
+export function ukDayEnd(t: number): number {
+  const p = ukParts(t)
+  return fromUK(p.y, p.m, p.d + 1, 0, 0)
+}
+
+export function fmtUK(t: number): string {
+  const p = ukParts(t)
+  return `${p.d} ${MONTHS[p.m - 1]}, ${pad(p.h)}:${pad(p.min)} UK`
+}
+
+export function fmtUKDate(t: number): string {
+  const p = ukParts(t)
+  return `${p.d} ${MONTHS[p.m - 1]} ${p.y}`
+}
+
+/** Value for <input type="datetime-local"> in UK time. */
+export function toUKInput(t: number): string {
+  const p = ukParts(t)
+  return `${p.y}-${pad(p.m)}-${pad(p.d)}T${pad(p.h)}:${pad(p.min)}`
+}
+
+export function fromUKInput(v: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(v)
+  if (!m) return null
+  return fromUK(+m[1], +m[2], +m[3], +m[4], +m[5])
+}
+
+export function fromUKDateInput(v: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v)
+  if (!m) return null
+  return fromUK(+m[1], +m[2], +m[3], 12, 0)
+}
+
+export const fmtMoney = (n: number) => '£' + n.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })

@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { BellRing, CheckCircle2, ListChecks, PhoneCall, Timer, AlertTriangle, Gauge, ChevronRight, Moon } from 'lucide-react'
+import { BellRing, CheckCircle2, ListChecks, PhoneCall, Timer, AlertTriangle, Briefcase, ChevronRight, Moon } from 'lucide-react'
 import { Badge, Button, Callout, Card, CardHeader, EmptyState, PageHeader, PendingTag, Segmented, Select, Stat, th, td, cn } from '@/components/ui'
 import { CompanyTag, SlaChip, SourceBadge } from '@/components/domain'
 import { LostReasonDialog } from '@/components/leads/LeadWidgets'
-import { useAppData, useMe } from '@/store/store'
+import { useCalmData, useMe } from '@/store/store'
 import { useAction } from '@/store/hooks'
-import { activeLeadCount, isAbsent, recordFirstContact, setStatus } from '@/domain/engine'
+import { isAbsent, recordFirstContact, setStatus } from '@/domain/engine'
+import { oppForLead } from '@/domain/sales'
+import { SALES_STAGE_LABEL } from '@/domain/constants'
 import { ALL_STATUSES, STATUS_LABEL, FUNNEL_ORDER } from '@/domain/constants'
 import type { FunnelStatus, Lead } from '@/domain/types'
 import { fmtDateTime, fmtRelative, isShiftTime, pktDayStart, monthStart, HOUR, SHIFT_START_HOUR, SHIFT_END_HOUR } from '@/lib/time'
@@ -14,7 +16,7 @@ import { fmtDateTime, fmtRelative, isShiftTime, pktDayStart, monthStart, HOUR, S
 const lastUpdate = (l: Lead) => Math.max(l.assignedAt ?? 0, l.firstContactAt ?? 0, ...l.statusHistory.map((h) => h.at), ...l.notes.map((n) => n.editedAt ?? n.at))
 
 export default function MyLeadsPage() {
-  const S = useAppData()
+  const S = useCalmData()
   const me = useMe()
   const act = useAction()
   const navigate = useNavigate()
@@ -34,6 +36,7 @@ export default function MyLeadsPage() {
   const rows = (view === 'open' ? open : view === 'closed' ? mine.filter((l) => l.status === 'booked' || l.status === 'lost') : mine).sort((a, b) => b.createdAt - a.createdAt)
 
   const blocked = (l: Lead, to: FunnelStatus) => {
+    if (to === 'booked' || l.status === 'booked') return true // set by the CRM on booking (SAL-FR-004)
     if (l.status === 'lost' && to !== 'lost' && !S.params.allowReopenLost) return true
     const fi = FUNNEL_ORDER.indexOf(l.status), ti = FUNNEL_ORDER.indexOf(to)
     return fi >= 0 && ti >= 0 && ti < fi && !S.params.allowBackwardStatus
@@ -47,7 +50,7 @@ export default function MyLeadsPage() {
         eyebrow={<span>P2-FR-001 · End-of-shift update</span>}
       />
 
-      {isAbsent(me, now) && <Callout tone="danger" className="mb-4" title="You are marked Absent for this shift">The Manager marked you Absent. You receive no new Leads, and pending off-time Leads were released and redistributed.</Callout>}
+      {isAbsent(me, now) && <Callout tone="danger" className="mb-4" title="You are marked Absent for this shift">A Manager or Admin marked you Absent. You receive no new Leads, and pending unworked off-time Leads were redistributed. Your active opportunities stay with you.</Callout>}
       {shift && notUpdated.length > 0 && (
         <Callout tone={lastHour ? 'warning' : 'info'} icon={BellRing} className="mb-4" title={lastHour ? 'End-of-shift reminder — the shift ends at 22:00 PKT' : `Update your Leads by the end of the shift (22:00 PKT)`}>
           {notUpdated.length} open {notUpdated.length === 1 ? 'Lead has' : 'Leads have'} not been updated this shift. <PendingTag title="Whether the end-of-shift update is enforced or only a reminder is to be confirmed. The prototype shows a reminder.">Reminder only — enforcement to be confirmed</PendingTag>
@@ -58,7 +61,7 @@ export default function MyLeadsPage() {
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label="Awaiting first contact" value={awaiting.length} icon={Timer} tone="brand" />
         <Stat label="SLA missed" value={overdue.length} icon={AlertTriangle} tone={overdue.length ? 'red' : 'neutral'} />
-        <Stat label="Active vs capacity" value={<span className="tabular-nums">{activeLeadCount(S, me.id)} / {S.params.capacity}</span>} sub="Uncontacted Leads you hold" icon={Gauge} tone={activeLeadCount(S, me.id) >= S.params.capacity ? 'amber' : 'neutral'} />
+        <Stat label="Open opportunities" value={open.length} sub="Work them in My opportunities" icon={Briefcase} onClick={() => navigate('/sales/opportunities')} />
         <Stat label="Booked this month" value={mine.filter((l) => l.status === 'booked' && l.statusHistory.at(-1)!.at >= monthStart(now)).length} icon={CheckCircle2} tone="green" />
       </div>
 
@@ -68,7 +71,7 @@ export default function MyLeadsPage() {
           <ul className="divide-y divide-slate-100">
             {awaiting.map((l) => (
               <li key={l.id} className={cn('flex flex-col gap-2.5 px-5 py-3 sm:flex-row sm:items-center sm:gap-3', l.slaAlertAt && 'bg-rose-50/40')}>
-                <button onClick={() => navigate(`/leads/${l.id}`)} className="min-w-0 flex-1 text-left">
+                <button onClick={() => { const o = oppForLead(S, l.id); navigate(o ? `/sales/opportunities/${o.id}` : `/leads/${l.id}`) }} className="min-w-0 flex-1 text-left">
                   <p className="text-[13.5px] font-semibold text-slate-900">{l.fields.fullName} <span className="ml-1 font-mono text-[11.5px] font-normal text-slate-400">{l.ref}</span></p>
                   <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-slate-500"><CompanyTag id={l.companyId} /><SourceBadge source={l.source} /><span className="whitespace-nowrap">{l.fields.phone}</span></p>
                 </button>
@@ -83,15 +86,15 @@ export default function MyLeadsPage() {
       )}
 
       <Card>
-        <CardHeader icon={ListChecks} title="End-of-shift update" description="Update each Lead’s funnel status inline. Lost asks for a reason." actions={
+        <CardHeader icon={ListChecks} title="End-of-shift update" description="Update each Lead’s shared funnel status inline. Lost asks for a reason and also closes the Sales opportunity. Booked is set by the CRM when a Booking is created." actions={
           <Segmented size="sm" value={view} onChange={setView} options={[{ value: 'open', label: 'Open', count: open.length }, { value: 'closed', label: 'Closed', count: mine.length - open.length }, { value: 'all', label: 'All', count: mine.length }]} />
         } />
         {rows.length === 0 ? (
           <EmptyState icon={ListChecks} title="No leads here" description="Leads assigned to you will appear here." />
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto" tabIndex={0}>
             <table className="w-full min-w-[860px]">
-              <thead className="border-b border-slate-100 bg-slate-50/60"><tr><th className={th}>Lead</th><th className={th}>Status</th><th className={th}>First contact</th><th className={th}>Last update</th><th className={th}>Notes</th><th className={cn(th, "relative")}><span className="sr-only">Actions</span></th></tr></thead>
+              <thead className="border-b border-slate-100 bg-slate-50/60"><tr><th className={th}>Lead</th><th className={th}>Funnel status</th><th className={th}>Sales stage</th><th className={th}>First contact</th><th className={th}>Last update</th><th className={th}>Notes</th><th className={cn(th, "relative")}><span className="sr-only">Actions</span></th></tr></thead>
               <tbody className="divide-y divide-slate-100">
                 {rows.slice(0, 80).map((l) => {
                   const updated = lastUpdate(l) >= shiftStart && shift
@@ -118,13 +121,14 @@ export default function MyLeadsPage() {
                           {l.status === 'lost' && <span className="truncate text-[11.5px] text-slate-500">{l.lossReason}</span>}
                         </div>
                       </td>
+                      <td className={td}><span className="text-[12.5px] text-slate-600">{(() => { const o = oppForLead(S, l.id); return o ? SALES_STAGE_LABEL[o.stage] : '—' })()}</span></td>
                       <td className={td}>{l.firstContactAt ? <span className="text-[12.5px] text-slate-600">{fmtDateTime(l.firstContactAt)}</span> : (l.status === 'lost' || l.status === 'booked') ? <span className="text-slate-400">—</span> : <Button size="xs" icon={PhoneCall} onClick={() => act((d) => recordFirstContact(d, l.id, me.id), 'First contact recorded')}>Record</Button>}</td>
                       <td className={td}>
                         <span className="text-[12.5px] text-slate-500">{fmtRelative(lastUpdate(l), now)}</span>
                         {updated && <Badge tone="green" className="ml-2">This shift</Badge>}
                       </td>
                       <td className={td}><span className="text-[12.5px] text-slate-500">{l.notes.length || '—'}</span></td>
-                      <td className={cn(td, 'text-right')}><Button size="xs" variant="ghost" iconRight={ChevronRight} onClick={() => navigate(`/leads/${l.id}`)}>Open</Button></td>
+                      <td className={cn(td, 'text-right')}><Button size="xs" variant="ghost" iconRight={ChevronRight} onClick={() => { const o = oppForLead(S, l.id); navigate(o ? `/sales/opportunities/${o.id}` : `/leads/${l.id}`) }}>Open</Button></td>
                     </tr>
                   )
                 })}

@@ -1,14 +1,16 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, UserCog, UserPlus, UserMinus, Contact, Megaphone, FileX, History, StickyNote, Activity, ExternalLink } from 'lucide-react'
+import { ArrowLeft, UserCog, UserPlus, UserMinus, Contact, Megaphone, FileX, History, StickyNote, Activity, ExternalLink, Briefcase, Clock, Share2 } from 'lucide-react'
 import { Avatar, Badge, Button, Card, CardHeader, KV, PageHeader, Tabs } from '@/components/ui'
 import { CompanyTag, ReadOnlyBadge, SourceBadge, StatusPill } from '@/components/domain'
 import { AssignDialog, NotesPanel, OwnershipHistory, SlaPanel, StatusControl, StatusHistory, TraceCard, UnassignDialog } from '@/components/leads/LeadWidgets'
 import { useAppData, useMe } from '@/store/store'
-import { canAssign, canEditOutcome, canViewLead, isViewOnlyCompany, ROLE_LABEL } from '@/domain/permissions'
+import { canAssign, canEditOutcome, canViewLead, canViewOpportunity, isViewOnlyCompany, ROLE_LABEL } from '@/domain/permissions'
+import { oppForLead } from '@/domain/sales'
+import { SALES_STAGE_LABEL } from '@/domain/constants'
 import { userName, companyName } from '@/domain/engine'
 import { FIELD_LABEL, STANDARD_FIELDS, SOURCE_LABEL } from '@/domain/constants'
-import { fmtDateTime } from '@/lib/time'
+import { fmtDateTime, fmtUK } from '@/lib/time'
 import { NotFound, PermissionDenied } from './Errors'
 
 export default function LeadDetailPage() {
@@ -30,6 +32,9 @@ export default function LeadDetailPage() {
   const owner = S.users.find((u) => u.id === lead.ownerId)
   const enquiry = lead.enquiryId ? S.enquiries.find((e) => e.id === lead.enquiryId) : null
   const audit = S.audit.filter((a) => a.leadId === lead.id).slice().reverse()
+  const opp = oppForLead(S, lead.id)
+  const showOpp = !!opp && canViewOpportunity(S, me, opp)
+  const referrer = lead.referralFromLeadId ? S.leads.find((l) => l.id === lead.referralFromLeadId) : null
 
   return (
     <div>
@@ -37,10 +42,11 @@ export default function LeadDetailPage() {
       <PageHeader
         title={<span className="flex flex-wrap items-center gap-3">{lead.fields.fullName}<StatusPill status={lead.status} /></span>}
         eyebrow={<><span className="font-mono">{lead.ref}</span><span>·</span><CompanyTag id={lead.companyId} /><span>·</span><SourceBadge source={lead.source} full /><span>·</span><span>Created {fmtDateTime(lead.createdAt)}</span>{isViewOnlyCompany(me, lead.companyId) && <ReadOnlyBadge />}</>}
-        actions={manage && (
+        actions={(manage || showOpp) && (
           <>
-            {lead.ownerId && <Button variant="danger" icon={UserMinus} onClick={() => setUnassignOpen(true)}>Unassign</Button>}
-            <Button variant="primary" icon={lead.ownerId ? UserCog : UserPlus} onClick={() => setAssignOpen(true)}>{lead.ownerId ? 'Reassign' : 'Assign'}</Button>
+            {showOpp && <Button icon={Briefcase} onClick={() => navigate(`/sales/opportunities/${opp!.id}`)}>Open opportunity</Button>}
+            {manage && lead.ownerId && <Button variant="danger" icon={UserMinus} onClick={() => setUnassignOpen(true)}>Unassign</Button>}
+            {manage && <Button variant="primary" icon={lead.ownerId ? UserCog : UserPlus} onClick={() => setAssignOpen(true)}>{lead.ownerId ? 'Reassign' : 'Assign'}</Button>}
           </>
         )}
       />
@@ -48,7 +54,8 @@ export default function LeadDetailPage() {
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
         <div className="min-w-0 space-y-5">
           <Card>
-            <CardHeader title="Funnel status" description={editable ? 'Update the status as the enquiry progresses. Lost requires a reason.' : 'P2-FR-001 · Lead → Mature → Hot → Booked, or Lost'} />
+            <CardHeader title="Shared funnel status" description={editable ? 'Update the status as the enquiry progresses. Lost requires a reason.' : 'P2-FR-001 · Lead → Mature → Hot → Booked, or Lost — separate from the Sales stage'}
+              actions={opp && <Badge tone="neutral" title="The detailed Sales stage is separate from the shared funnel (P2-FR-001)">Sales stage: {SALES_STAGE_LABEL[opp.stage]}{opp.dormant ? ' · Low Intent / Dormant' : ''}</Badge>} />
             <div className="p-5"><StatusControl lead={lead} editable={editable} /></div>
           </Card>
 
@@ -72,6 +79,8 @@ export default function LeadDetailPage() {
                   {enquiry && <Link to={`/inbox/${enquiry.id}`} className="ml-2 inline-flex items-center gap-1 text-[12px] font-medium text-brand-700 hover:underline">{enquiry.ref}<ExternalLink className="size-3" /></Link>}
                 </KV>}
                 {lead.externalEventId && <KV label="External event"><span className="font-mono text-[12px]">{lead.externalEventId}</span></KV>}
+                {referrer && <KV label={<span className="inline-flex items-center gap-1"><Share2 className="size-3" />Referred by</span>}>{canViewLead(S, me, referrer) ? <Link to={`/leads/${referrer.id}`} className="text-brand-700 hover:underline">{referrer.fields.fullName} ({referrer.ref})</Link> : referrer.ref}</KV>}
+                <KV label={<span className="inline-flex items-center gap-1"><Clock className="size-3" />Preferred contact</span>}>{lead.preferredContact ? (lead.preferredContact.mode === 'exact' ? fmtUK(lead.preferredContact.at) : `${lead.preferredContact.label} (window)`) : <span className="font-normal text-slate-400">Not given — immediate contact</span>}</KV>
                 <KV label="Created by">{userName(S, lead.createdByUserId)}</KV>
               </dl>
             </Card>

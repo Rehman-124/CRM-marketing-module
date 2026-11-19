@@ -136,7 +136,7 @@ describe('inbound sync from Meta', () => {
   })
 
   test('echo of a reply sent from the CRM is not duplicated; a reply sent from Meta’s inbox is added', () => {
-    const e = E.createEnquiry(S, { companyId: 'flightnest', channel: 'facebook_dm', handle: 'C', text: 'hi', platformUserId: 'psid-1', origin: 'live' })
+    const e = E.createEnquiry(S, { companyId: 'flightnest', channel: 'facebook_dm', handle: 'C', text: 'hi', platformUserId: 'psid-1', origin: 'live', at: Date.now() }) // live threads run on real time
     const q = queued(queueReply(S, e.id, 'dm', 'From CRM', 'u-mkt1', false))
     completeReply(S, e.id, q.id, { ...ok, externalId: 'mid.CRM' })
     applyInbound(S, { type: 'message', companyId: 'flightnest', channel: 'messenger', senderId: 'page', recipientId: 'psid-1', text: 'From CRM', externalId: 'mid.CRM', at: S.clock.now, echo: true })

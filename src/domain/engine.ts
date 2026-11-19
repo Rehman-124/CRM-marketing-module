@@ -2,13 +2,15 @@
 // (the store wraps them in immer). Each rule cites the FRD requirement it implements.
 
 import { SOURCE_LABEL, SYSTEM_ID, CONNECTION_LABEL, FUNNEL_ORDER } from './constants'
+import { canAssign } from './permissions'
+import { createOpportunity, onLeadAssigned, syncLostToSales, salesTick, isUnworked } from './sales'
 import type {
   AppData, AuditEntry, AuditType, AppNotification, CompanyId, CustomerFields, DistributionTrace, Enquiry,
-  EnquiryChannel, FunnelStatus, Lead, LeadSource, NotificationType, OwnershipChangeKind, User, FailedEvent,
+  EnquiryChannel, FunnelStatus, Lead, LeadSource, NotificationType, OwnershipChangeKind, Permission, PreferredContact, User, FailedEvent,
 } from './types'
-import { SLA_MS, isShiftTime, monthKey, nextShiftBoundary, pktHour, shiftKey, pktDateKey, fmtTime } from '../lib/time'
+import { SLA_MS, isShiftTime, nextShiftBoundary, pktHour, shiftKey, pktDateKey, fmtTime } from '../lib/time'
 
-export type Result = { ok: true; id?: string } | { ok: false; error: string }
+export type Result = { ok: true; id?: string } | { ok: false; error: string; id?: undefined }
 const ok = (id?: string): Result => ({ ok: true, id })
 const fail = (error: string): Result => ({ ok: false, error })
 
@@ -53,48 +55,50 @@ export function isEffectivelyAvailable(agent: User, t: number): boolean {
 
 const isOpenOutcome = (l: Lead) => l.status !== 'booked' && l.status !== 'lost'
 
-/**
- * Active (unresolved) leads held right now: assigned, not yet dealt with (no first contact),
- * and not closed. Counted against the active-lead capacity (P1-FR-002).
- */
-export function activeLeadCount(S: AppData, agentId: string): number {
+/** Leads assigned to the agent that have no first contact yet (shown for monitoring only — v1.4 has no capacity limit). */
+export function uncontactedCount(S: AppData, agentId: string): number {
   return S.leads.filter((l) => l.ownerId === agentId && l.firstContactAt === null && isOpenOutcome(l)).length
 }
 
-export function monthlyCount(S: AppData, agentId: string, month: string): number {
-  return S.assignments.filter((a) => a.agentId === agentId && a.counted && !a.voided && monthKey(a.at) === month).length
+/** Counted, non-voided assignments since the agent joined. The score never resets automatically (v1.4: "does not reset at midnight"; any other reset is to be confirmed). */
+export function assignmentCount(S: AppData, agentId: string): number {
+  return S.assignments.filter((a) => a.agentId === agentId && a.counted && !a.voided).length
 }
 
-export function offsetFor(S: AppData, agentId: string, month: string): number {
-  return S.offsets.find((o) => o.agentId === agentId && o.month === month)?.offset ?? 0
+export function offsetFor(S: AppData, agentId: string): number {
+  return S.offsets.find((o) => o.agentId === agentId)?.offset ?? 0
 }
 
-/** Effective score = actual monthly assignments + starting offset (P1-FR-003). */
-export function fairnessScore(S: AppData, agentId: string, month: string) {
-  const count = monthlyCount(S, agentId, month)
-  const offset = offsetFor(S, agentId, month)
+/**
+ * Fair-distribution score. v1.4 leaves the calculation and a new agent's starting score "to be confirmed".
+ * PLACEHOLDER (product-owner choice, 19 Nov 2026): counted assignments + a starting score equal to the team
+ * average when the agent was added.
+ */
+export function fairnessScore(S: AppData, agentId: string) {
+  const count = assignmentCount(S, agentId)
+  const offset = offsetFor(S, agentId)
   return { count, offset, score: count + offset }
 }
 
-export type AgentState = 'available' | 'unavailable' | 'absent' | 'at-capacity'
+/** Agent status in v1.4: Available and Unavailable are set by the agent; Absent by a Manager or Admin. */
+export type AgentState = 'available' | 'unavailable' | 'absent'
 
-export function agentState(S: AppData, agent: User, t: number): AgentState {
+export function agentState(_S: AppData, agent: User, t: number): AgentState {
   if (isAbsent(agent, t)) return 'absent'
   if (agent.availability === 'unavailable') return 'unavailable'
-  if (activeLeadCount(S, agent.id) >= S.params.capacity) return 'at-capacity'
   return 'available'
 }
 
-function audit(S: AppData, type: AuditType, actorId: string, companyId: CompanyId | null, summary: string, extra: Partial<AuditEntry> = {}) {
+export function audit(S: AppData, type: AuditType, actorId: string, companyId: CompanyId | null, summary: string, extra: Partial<AuditEntry> = {}) {
   S.audit.push({ id: nextId(S, 'au'), at: S.clock.now, type, actorId, companyId, summary, ...extra })
 }
 
-function notify(S: AppData, type: NotificationType, companyId: CompanyId | null, title: string, body: string, leadId?: string) {
-  const n: AppNotification = { id: nextId(S, 'nt'), at: S.clock.now, type, companyId, title, body, leadId, read: false, cleared: false }
+export function notify(S: AppData, type: NotificationType, companyId: CompanyId | null, title: string, body: string, leadId?: string, extra: Partial<AppNotification> = {}) {
+  const n: AppNotification = { id: nextId(S, 'nt'), at: S.clock.now, type, companyId, title, body, leadId, read: false, cleared: false, ...extra }
   S.notifications.push(n)
 }
 
-function clearSlaAlerts(S: AppData, leadId: string) {
+export function clearSlaAlerts(S: AppData, leadId: string) {
   for (const n of S.notifications) if (n.type === 'sla' && n.leadId === leadId) n.cleared = true
 }
 
@@ -104,78 +108,79 @@ function setOwner(S: AppData, lead: Lead, toAgentId: string | null, kind: Owners
   lead.ownerId = toAgentId
   lead.assignedAt = toAgentId ? t : null
   lead.assignedInOffTime = toAgentId ? !isShiftTime(t) : false
+  // SAL-FR-001: the Lead arrives in the new owner's My Opportunities with its contact task or contact prompt
+  if (toAgentId) onLeadAssigned(S, lead)
 }
 
-// ---------------------------------------------------------------- distribution (P1-FR-002, P1-FR-003)
+/** Rotating deterministic tie-breaker: the next agent in roster order after the previous tie winner (order to be confirmed). */
+function rotate(S: AppData, companyId: CompanyId, candidates: User[]): User {
+  const last = userById(S, S.tieRotation[companyId])
+  const lastOrder = last?.rosterOrder ?? -Infinity
+  const winner = candidates.find((a) => (a.rosterOrder ?? 0) > lastOrder) ?? candidates[0]
+  S.tieRotation[companyId] = winner.id
+  return winner
+}
+
+// ---------------------------------------------------------------- distribution (v1.4 P1-FR-002)
 
 /**
- * Distribution rule used in the FRD: eligibility first (Absent → Unavailable → capacity),
- * then fairness picks the lowest score among the agents left.
- * During off-time availability is ignored (P1-FR-004); whether capacity applies off-time is a pending decision.
+ * For every automatic assignment the CRM (v1.4 P1-FR-002):
+ *  1. excludes Absent agents;
+ *  2. finds the lowest score among the remaining agents — the lowest-score group;
+ *  3. during shift, prefers an Available agent inside that group, chosen with a rotating tie-breaker;
+ *  4. if every agent in the group is Unavailable, still assigns inside the same group;
+ *  5. never gives the Lead to a higher-score agent just because that agent is Available.
+ * Off-time: assigned by fair share across the normal roster, availability ignored, no SLA (P1-FR-003).
  */
 export function distribute(S: AppData, leadId: string): DistributionTrace | null {
   const lead = S.leads.find((l) => l.id === leadId)
   if (!lead) return null
   const t = S.clock.now
   const inShift = isShiftTime(t)
-  const month = monthKey(t)
-  const cap = S.params.capacity
-  const capacityApplied = inShift || S.params.capacityAppliesOffTime
 
   const pool = companyAgents(S, lead.companyId) // MKT-BR-003: own company only
-  let remaining = pool
-  const removedAbsent = inShift ? remaining.filter((a) => isAbsent(a, t)) : []
-  remaining = remaining.filter((a) => !removedAbsent.includes(a))
-  const removedUnavailable = inShift ? remaining.filter((a) => a.availability === 'unavailable') : []
-  remaining = remaining.filter((a) => !removedUnavailable.includes(a))
-  const removedAtCapacity = capacityApplied ? remaining.filter((a) => activeLeadCount(S, a.id) >= cap) : []
-  remaining = remaining.filter((a) => !removedAtCapacity.includes(a))
-
-  const scores = remaining.map((a) => ({ agentId: a.id, ...fairnessScore(S, a.id, month) }))
+  const removedAbsent = pool.filter((a) => isAbsent(a, t))
+  const remaining = pool.filter((a) => !removedAbsent.includes(a))
+  const scores = remaining.map((a) => ({ agentId: a.id, ...fairnessScore(S, a.id), available: a.availability === 'available' }))
   const trace: DistributionTrace = {
-    at: t, inShift, pool: pool.map((a) => a.id),
-    removedAbsent: removedAbsent.map((a) => a.id),
-    removedUnavailable: removedUnavailable.map((a) => a.id),
-    removedAtCapacity: removedAtCapacity.map((a) => a.id),
-    scores, winnerId: null, tieBreak: false, capacityApplied, capacity: cap,
+    at: t, inShift, pool: pool.map((a) => a.id), removedAbsent: removedAbsent.map((a) => a.id),
+    scores, lowestScore: null, group: [], availableInGroup: [], allGroupUnavailable: false, winnerId: null, tieBreak: false,
   }
 
   if (remaining.length === 0) {
-    // AC-P1-002-5: stays Unassigned and the Manager is notified.
+    // To be confirmed in v1.4: what happens when every agent is Absent or the company has no agents.
+    // Placeholder: the Lead stays Unassigned and Managers are notified.
     lead.lastTrace = trace
     setOwner(S, lead, null, 'unassigned-no-eligible', SYSTEM_ID)
-    const why = pool.length === 0 ? `${companyName(S, lead.companyId)} has no sales agents yet` : 'no agent passed the Absent, Unavailable and capacity checks'
+    const why = pool.length === 0 ? `${companyName(S, lead.companyId)} has no sales agents yet` : 'every agent is marked Absent'
     audit(S, 'no-eligible', SYSTEM_ID, lead.companyId, `${lead.ref} left Unassigned — ${why}`, { leadId: lead.id })
-    notify(S, 'no-eligible', lead.companyId, `No eligible agent for ${lead.ref}`, `${lead.fields.fullName || 'New lead'} (${companyName(S, lead.companyId)}) is Unassigned — ${why}. Assign it manually.`, lead.id)
+    notify(S, 'no-eligible', lead.companyId, `No agent for ${lead.ref}`, `${lead.fields.fullName || 'New lead'} (${companyName(S, lead.companyId)}) is Unassigned — ${why}. Assign it manually.`, lead.id)
     return trace
   }
 
   const min = Math.min(...scores.map((s) => s.score))
-  const tied = remaining.filter((a) => scores.find((s) => s.agentId === a.id)!.score === min)
-  let winner = tied[0]
-  if (tied.length > 1) {
-    // Rotating deterministic tie-break: next agent in roster order after the previous tie winner.
-    trace.tieBreak = true
-    const last = userById(S, S.tieRotation[lead.companyId])
-    const lastOrder = last?.rosterOrder ?? -Infinity
-    winner = tied.find((a) => (a.rosterOrder ?? 0) > lastOrder) ?? tied[0]
-    S.tieRotation[lead.companyId] = winner.id
-  }
-  trace.winnerId = winner.id
+  const group = remaining.filter((a) => scores.find((s) => s.agentId === a.id)!.score === min)
+  const availableInGroup = inShift ? group.filter((a) => a.availability === 'available') : []
+  // During shift an Available agent in the group is preferred; if all are Unavailable the Lead still stays in the group.
+  const candidates = inShift && availableInGroup.length ? availableInGroup : group
+  const winner = candidates.length > 1 ? rotate(S, lead.companyId, candidates) : candidates[0]
+  Object.assign(trace, {
+    lowestScore: min, group: group.map((a) => a.id), availableInGroup: availableInGroup.map((a) => a.id),
+    allGroupUnavailable: inShift && availableInGroup.length === 0, winnerId: winner.id, tieBreak: candidates.length > 1,
+  })
   lead.lastTrace = trace
 
-  setOwner(S, lead, winner.id, 'auto', SYSTEM_ID)
   lead.slaCountedMs = 0
   lead.slaAlertAt = null
   S.assignments.push({ id: nextId(S, 'as'), leadId: lead.id, agentId: winner.id, companyId: lead.companyId, at: t, kind: 'auto', counted: true, voided: false })
-  const sc = scores.find((s) => s.agentId === winner.id)!
+  setOwner(S, lead, winner.id, 'auto', SYSTEM_ID)
   audit(S, 'auto-assign', SYSTEM_ID, lead.companyId,
-    `${lead.ref} assigned to ${winner.name} (score ${sc.score}${trace.tieBreak ? ', tie broken by rotation' : ''}${inShift ? '' : ', off-time — no SLA'})`,
+    `${lead.ref} assigned to ${winner.name} (lowest score ${min}${group.length > 1 ? `, ${group.length} agents in the group` : ''}${trace.allGroupUnavailable ? ', all Unavailable — assigned inside the group' : ''}${trace.tieBreak ? ', tie broken by rotation' : ''}${inShift ? '' : ', off-time — no SLA'})`,
     { leadId: lead.id, agentId: winner.id })
   return trace
 }
 
-// ---------------------------------------------------------------- clock & SLA (P1-FR-004)
+// ---------------------------------------------------------------- clock & SLA (P1-FR-003)
 
 function slaQualifies(S: AppData, lead: Lead, t: number): boolean {
   if (!lead.ownerId || lead.firstContactAt !== null || !isOpenOutcome(lead)) return false
@@ -198,7 +203,7 @@ function raiseSlaAlert(S: AppData, lead: Lead, at: number) {
 
 /**
  * Advance simulated time. The one-hour timer counts only while it is shift time,
- * the Lead is assigned, and the owner is Available (AC-P1-004-2/3).
+ * the Lead is assigned, and the owner is Available (AC-P1-003-2/3).
  */
 export function advanceTo(S: AppData, t1: number) {
   let t = S.clock.now
@@ -219,10 +224,11 @@ export function advanceTo(S: AppData, t1: number) {
     t = nb
     S.clock.now = t
     if (nb === boundary && pktHour(nb) === 14) {
-      notify(S, 'shift-start', null, `Shift started · ${pktDateKey(nb)}`, 'Mark any Absent agents. Pending off-time Leads they own will be released and redistributed (MKT-BR-009).')
+      notify(S, 'shift-start', null, `Shift started · ${pktDateKey(nb)}`, 'Mark any Absent agents. Their pending, unworked off-time Leads will be released and redistributed (P1-FR-003). Active opportunities and bookings stay with their owner.')
     }
   }
   S.clock.now = t1
+  salesTick(S)
 }
 
 // ---------------------------------------------------------------- lead creation (P1-FR-001)
@@ -236,10 +242,18 @@ export interface NewLeadInput {
   enquiryId?: string
   conversationRef?: string
   externalEventId?: string
-  assignment: { mode: 'auto' } | { mode: 'manual'; agentId: string }
+  /** referral: SAL-FR-001 — assigned to the agent who owns the referring customer */
+  assignment: { mode: 'auto' } | { mode: 'manual'; agentId: string } | { mode: 'referral'; agentId: string; fromLeadId: string }
+  /** SAL-FR-001: kept with the Lead and turned into a UK-local contact task on assignment */
+  preferredContact?: PreferredContact | null
 }
 
 export function createLead(S: AppData, input: NewLeadInput, actorId: string): Lead {
+  if (input.assignment.mode === 'manual' && actorId !== SYSTEM_ID) {
+    const actor = userById(S, actorId)
+    // AC-P1-002-11: manual assignment at entry needs the Reassignment permission for that company
+    if (!actor || !canAssign(S, actor, input.companyId)) throw new Error('Manual assignment needs the Reassignment permission for this company')
+  }
   const t = S.clock.now
   const lead: Lead = {
     id: nextId(S, 'ld'),
@@ -267,10 +281,20 @@ export function createLead(S: AppData, input: NewLeadInput, actorId: string): Le
     slaCountedMs: 0,
     slaAlertAt: null,
     lastTrace: null,
+    preferredContact: input.preferredContact ?? null,
   }
   S.leads.push(lead)
+  createOpportunity(S, lead) // SAL-FR-001: every Lead is also a Sales opportunity (stage New)
+  audit(S, 'lead-created', actorId, lead.companyId, `${lead.ref} created from ${SOURCE_LABEL[lead.source]}${lead.campaignId ? '' : ' (no campaign data)'}`, { leadId: lead.id })
   if (input.assignment.mode === 'manual') {
     manualAssign(S, lead.id, input.assignment.agentId, actorId)
+  } else if (input.assignment.mode === 'referral') {
+    const agentId = input.assignment.agentId
+    lead.referralFromLeadId = input.assignment.fromLeadId
+    // Whether a referral counts toward the fair-distribution score is not stated in v1.4 (pending decision).
+    S.assignments.push({ id: nextId(S, 'as'), leadId: lead.id, agentId, companyId: lead.companyId, at: t, kind: 'referral', counted: S.params.referralCountsTowardFairness, voided: false })
+    setOwner(S, lead, agentId, 'referral', actorId, 'Referral — assigned to the agent who owns the referring customer')
+    audit(S, 'referral', actorId, lead.companyId, `${lead.ref} (referral) assigned to ${userName(S, agentId)}, owner of the referring customer`, { leadId: lead.id, agentId })
   } else {
     distribute(S, lead.id)
   }
@@ -350,12 +374,16 @@ export function convertEnquiry(S: AppData, enquiryId: string, actorId: string): 
   return ok(lead.id)
 }
 
-// ---------------------------------------------------------------- manual controls (MKT-BR-006, P3-FR-002)
+// ---------------------------------------------------------------- manual controls (P1-FR-002)
 
 /** Assign (to an agent), unassign (null) or reassign. Manual assignment skips the eligibility filters. */
 export function manualAssign(S: AppData, leadId: string, toAgentId: string | null, actorId: string, reason?: string): Result {
   const lead = S.leads.find((l) => l.id === leadId)
   if (!lead) return fail('Lead not found')
+  const actor = userById(S, actorId)
+  // AC-P1-002-11 / AC-SAL-008-1: blocked for users without Reassignment permission or from another company
+  if (!actor || !canAssign(S, actor, lead.companyId)) return fail('Permission denied — changing ownership needs the Reassignment permission for this company')
+  if (S.params.requireReassignReason && lead.ownerId && toAgentId && !reason?.trim()) return fail('A reason is required for a reassignment (pending decision switched on)')
   if (toAgentId) {
     const agent = userById(S, toAgentId)
     if (!agent || agent.role !== 'agent') return fail('Choose a sales agent')
@@ -366,15 +394,15 @@ export function manualAssign(S: AppData, leadId: string, toAgentId: string | nul
   }
   const kind: OwnershipChangeKind = !toAgentId ? 'manual-unassign' : lead.ownerId ? 'manual-reassign' : 'manual-assign'
   const from = lead.ownerId
+  if (toAgentId) {
+    S.assignments.push({ id: nextId(S, 'as'), leadId: lead.id, agentId: toAgentId, companyId: lead.companyId, at: S.clock.now, kind: 'manual', counted: S.params.manualCountsTowardFairness, voided: false })
+  }
   setOwner(S, lead, toAgentId, kind, actorId, reason?.trim() || undefined)
 
   if (!toAgentId || S.params.slaRestartsOnReassign) {
     lead.slaCountedMs = toAgentId ? 0 : lead.slaCountedMs
     lead.slaAlertAt = null
     clearSlaAlerts(S, lead.id)
-  }
-  if (toAgentId) {
-    S.assignments.push({ id: nextId(S, 'as'), leadId: lead.id, agentId: toAgentId, companyId: lead.companyId, at: S.clock.now, kind: 'manual', counted: S.params.manualCountsTowardFairness, voided: false })
   }
   const verb = kind === 'manual-assign' ? 'assigned to' : kind === 'manual-unassign' ? 'unassigned from' : 'reassigned to'
   const summary = kind === 'manual-unassign'
@@ -386,12 +414,13 @@ export function manualAssign(S: AppData, leadId: string, toAgentId: string | nul
   return ok(lead.id)
 }
 
-// ---------------------------------------------------------------- availability, absence, capacity
+// ---------------------------------------------------------------- availability & absence (P1-FR-002, P1-FR-003)
 
-/** Only agents set their own Available/Unavailable (P3-FR-001). Audit-logged (P1-FR-004). */
+/** Only agents set their own Available/Unavailable (AC-P3-001-5). Audit-logged (AC-P1-003-9). */
 export function setAvailability(S: AppData, agentId: string, value: 'available' | 'unavailable', actorId: string): Result {
   const a = userById(S, agentId)
   if (!a || a.role !== 'agent') return fail('Agent not found')
+  if (actorId !== agentId) return fail('Agents set their own Available or Unavailable status')
   if (a.availability === value) return ok()
   a.availability = value
   audit(S, 'availability', actorId, a.companyIds[0], `${a.name} set themselves ${value === 'available' ? 'Available' : 'Unavailable'}${isShiftTime(S.clock.now) ? '' : ' (off-time)'}`, { agentId })
@@ -399,20 +428,24 @@ export function setAvailability(S: AppData, agentId: string, value: 'available' 
 }
 
 /**
- * Manager marks an agent Absent for the current shift. Pending off-time Leads they own become
- * Unassigned and are redistributed; the new owner gets the count (MKT-BR-009, AC-P1-004-7).
+ * Manager or Admin marks an agent Absent for the shift (AC-P1-002-2, AC-P3-001-4). Pending off-time Leads the agent
+ * owns that are still unworked (no first contact, Sales stage New, no contact attempt) become Unassigned and are
+ * redistributed; the new owner gets the count (AC-P1-003-8, AC-P1-002-9). Active opportunities and bookings keep
+ * their owner (AC-SAL-001-8).
  */
 export function setAbsent(S: AppData, agentId: string, absent: boolean, actorId: string): Result {
   const a = userById(S, agentId)
   if (!a || a.role !== 'agent') return fail('Agent not found')
+  const actor = userById(S, actorId)
+  if (!actor || !(actor.role === 'admin' || (actor.role === 'manager' && actor.companyIds.includes(a.companyIds[0])))) return fail('Only a Manager or Admin can mark an agent Absent')
   const t = S.clock.now
-  if (!isShiftTime(t)) return fail('Absent is marked during the shift (14:00–22:00 PKT)')
+  if (!isShiftTime(t)) return fail('Absent is marked at shift start, during the shift (14:00–22:00 PKT)')
   if (absent === isAbsent(a, t)) return ok()
   a.absentShiftKey = absent ? shiftKey(t) : null
   audit(S, 'absent', actorId, a.companyIds[0], `${a.name} marked ${absent ? 'Absent' : 'back at work'} for the ${shiftKey(t)} shift`, { agentId })
   if (!absent) return ok()
 
-  const pending = S.leads.filter((l) => l.ownerId === a.id && l.assignedInOffTime && l.firstContactAt === null && isOpenOutcome(l))
+  const pending = S.leads.filter((l) => l.ownerId === a.id && l.assignedInOffTime && isUnworked(S, l))
   for (const lead of pending) {
     const rec = [...S.assignments].reverse().find((r) => r.leadId === lead.id && r.agentId === a.id && !r.voided)
     if (rec) rec.voided = true
@@ -426,43 +459,47 @@ export function setAbsent(S: AppData, agentId: string, absent: boolean, actorId:
   return ok()
 }
 
-export function setCapacity(S: AppData, value: number, actorId: string): Result {
-  if (!Number.isInteger(value) || value < 1 || value > 50) return fail('Capacity must be a whole number between 1 and 50')
-  const prev = S.params.capacity
-  S.params.capacity = value
-  audit(S, 'capacity', actorId, null, `Active-lead capacity changed from ${prev} to ${value} (placeholder value — to be confirmed)`)
-  return ok()
-}
-
 /**
- * Team baseline for a new mid-month agent. Placeholder calculation (FRD: "for example the average"):
- * average effective score of the company's current agents this month, rounded to the nearest whole number.
+ * Starting score for an agent added later. v1.4: "what score a newly added agent starts with" is to be confirmed.
+ * PLACEHOLDER (product-owner choice, 19 Nov 2026): the average current score of the company's agents, rounded.
  */
 export function newAgentBaseline(S: AppData, companyId: CompanyId) {
-  const month = monthKey(S.clock.now)
   const agents = companyAgents(S, companyId)
-  if (agents.length === 0) return { baseline: 0, month, average: 0, agents: 0 }
-  const scores = agents.map((a) => fairnessScore(S, a.id, month).score)
+  if (agents.length === 0) return { baseline: 0, average: 0, agents: 0 }
+  const scores = agents.map((a) => fairnessScore(S, a.id).score)
   const average = scores.reduce((x, y) => x + y, 0) / scores.length
-  return { baseline: Math.round(average), month, average, agents: agents.length }
+  return { baseline: Math.round(average), average, agents: agents.length }
 }
 
 export function addAgent(S: AppData, input: { name: string; companyId: CompanyId }, actorId: string): Result {
   const name = input.name.trim()
   if (!name) return fail('Enter the agent’s name')
-  const { baseline, month, average, agents } = newAgentBaseline(S, input.companyId)
+  const actor = userById(S, actorId)
+  if (!actor || actor.role !== 'admin') return fail('Only the Admin configures company teams')
+  const { baseline, average, agents } = newAgentBaseline(S, input.companyId)
   const roster = companyAgents(S, input.companyId)
   const user: User = {
     id: nextId(S, 'u'), name, role: 'agent', title: 'Sales Agent', companyIds: [input.companyId], viewOnlyCompanyIds: [],
     availability: 'available', absentShiftKey: null, joinedAt: S.clock.now,
-    rosterOrder: (roster.at(-1)?.rosterOrder ?? 0) + 1,
+    rosterOrder: (roster.at(-1)?.rosterOrder ?? 0) + 1, permissions: [],
   }
   S.users.push(user)
-  // On the 1st the team baseline is 0, so a mid-month joiner is the only case with a non-zero offset.
-  const offset = baseline
-  S.offsets.push({ agentId: user.id, month, offset, baselineNote: agents ? `Average of ${agents} agent scores = ${average.toFixed(2)}, rounded` : 'No existing agents' })
-  audit(S, 'agent-added', actorId, input.companyId, `${name} added to ${companyName(S, input.companyId)} with starting offset ${offset} (real count 0)`, { agentId: user.id })
+  S.offsets.push({ agentId: user.id, offset: baseline, at: S.clock.now, baselineNote: agents ? `Team average of ${agents} agent scores = ${average.toFixed(2)}, rounded (placeholder)` : 'No existing agents — starts at 0 (placeholder)' })
+  audit(S, 'agent-added', actorId, input.companyId, `${name} added to ${companyName(S, input.companyId)} with starting score ${baseline} (placeholder — to be confirmed)`, { agentId: user.id })
   return ok(user.id)
+}
+
+/** Admin grants or removes the separate Reassignment and Booking Margin Override permissions (SAL-FR-008). */
+export function setPermissions(S: AppData, userId: string, permissions: Permission[], actorId: string): Result {
+  const actor = userById(S, actorId)
+  if (!actor || actor.role !== 'admin') return fail('Only the Admin manages permissions')
+  const u = userById(S, userId)
+  if (!u) return fail('User not found')
+  if (u.role === 'admin') return fail('Admin holds every permission by default')
+  const before = u.permissions.join(', ') || 'none'
+  u.permissions = [...new Set(permissions)]
+  audit(S, 'permission', actorId, null, `${u.name}: permissions changed from ${before} to ${u.permissions.join(', ') || 'none'}`)
+  return ok()
 }
 
 // ---------------------------------------------------------------- outcomes (P2-FR-001)
@@ -479,21 +516,37 @@ export function recordFirstContact(S: AppData, leadId: string, actorId: string):
   return ok()
 }
 
+/** Writes the shared funnel status and its history. Used by the agent (setStatus) and by Sales booking / Lost sync. */
+export function applyFunnelStatus(S: AppData, lead: Lead, to: FunnelStatus, actorId: string, lossReason?: string) {
+  if (lead.status === to && to !== 'lost') return
+  const from = lead.status
+  lead.status = to
+  lead.lossReason = to === 'lost' ? (lossReason ?? '').trim() : null
+  lead.statusHistory.push({ at: S.clock.now, from, to, byUserId: actorId, lossReason: to === 'lost' ? lossReason?.trim() : undefined })
+  if (to === 'booked' || to === 'lost') clearSlaAlerts(S, lead.id)
+  audit(S, 'status', actorId, lead.companyId, `${lead.ref} funnel status ${from} → ${to}${to === 'lost' ? ` (“${lossReason?.trim()}”)` : ''}`, { leadId: lead.id })
+}
+
+/**
+ * The owning agent sets the shared funnel status (P2-FR-001). Product-owner decision (19 Nov 2026):
+ * Booked Lead is set only by the CRM when a Booking is created (SAL-FR-004), and Lost mirrors the Sales
+ * opportunity's Lost with the same reason. Mature and Hot stay agent-set until the stage mapping is confirmed.
+ */
 export function setStatus(S: AppData, leadId: string, to: FunnelStatus, actorId: string, lossReason?: string): Result {
   const lead = S.leads.find((l) => l.id === leadId)
   if (!lead) return fail('Lead not found')
-  if (lead.ownerId !== actorId) return fail('Only the owning Sales Agent maintains the funnel status (MKT-BR-012)')
+  if (lead.ownerId !== actorId) return fail('Only the owning Sales Agent maintains the funnel status')
   if (lead.status === to && to !== 'lost') return ok()
+  if (to === 'booked') return fail('Booked Lead is set automatically when Accounts confirms payment and a Booking is created (SAL-FR-004)')
+  if (lead.status === 'booked') return fail('This Lead has a Booking. A Booking is never cancelled from the funnel — refunds go through Accounts')
   if (to === 'lost' && !lossReason?.trim()) return fail('A loss reason is required to save Lost')
   if (lead.status === 'lost' && to !== 'lost' && !S.params.allowReopenLost) return fail('Reopening a Lost Lead is not allowed (pending decision)')
   const fromIdx = FUNNEL_ORDER.indexOf(lead.status)
   const toIdx = FUNNEL_ORDER.indexOf(to)
   if (fromIdx >= 0 && toIdx >= 0 && toIdx < fromIdx && !S.params.allowBackwardStatus) return fail('Moving a Lead backward is not allowed (pending decision)')
-  const from = lead.status
-  lead.status = to
-  lead.lossReason = to === 'lost' ? lossReason!.trim() : null
-  lead.statusHistory.push({ at: S.clock.now, from, to, byUserId: actorId, lossReason: to === 'lost' ? lossReason!.trim() : undefined })
-  if (to === 'booked' || to === 'lost') clearSlaAlerts(S, lead.id)
+  const wasLost = lead.status === 'lost'
+  applyFunnelStatus(S, lead, to, actorId, lossReason)
+  if (to === 'lost' || wasLost) syncLostToSales(S, lead, actorId)
   return ok()
 }
 
@@ -517,7 +570,7 @@ export function editNote(S: AppData, leadId: string, noteId: string, text: strin
   return ok()
 }
 
-// ---------------------------------------------------------------- integrations (P3-FR-003)
+// ---------------------------------------------------------------- integrations (P3-FR-002)
 
 export interface ExternalPayload {
   kind: 'lead' | 'enquiry'
@@ -530,6 +583,8 @@ export interface ExternalPayload {
   handle?: string
   text?: string
   postContext?: string
+  /** SAL-FR-001: a preferred contact time captured by the form, where provided */
+  preferredContact?: PreferredContact | null
 }
 
 export function connectionFor(S: AppData, companyId: CompanyId, source: LeadSource) {
@@ -542,13 +597,13 @@ function materialise(S: AppData, companyId: CompanyId, p: ExternalPayload): stri
     const e = createEnquiry(S, { companyId, channel: p.channel!, handle: p.handle ?? p.fields.fullName, text: p.text ?? '', postContext: p.postContext, externalEventId: p.externalId })
     return e.id
   }
-  const lead = createLead(S, { companyId, source: p.source, fields: p.fields, campaignId: p.campaignId, adId: p.adId, externalEventId: p.externalId, assignment: { mode: 'auto' } }, SYSTEM_ID)
+  const lead = createLead(S, { companyId, source: p.source, fields: p.fields, campaignId: p.campaignId, adId: p.adId, externalEventId: p.externalId, assignment: { mode: 'auto' }, preferredContact: p.preferredContact ?? null }, SYSTEM_ID)
   return lead.id
 }
 
 /**
- * Receive an external event. A repeated delivery of the same event is one record, not two (AC-P3-003-2).
- * A failing connection never drops an event silently: it is flagged (AC-P3-003-6).
+ * Receive an external event. A repeated delivery of the same event is one record, not two (AC-P3-002-2).
+ * A failing connection never drops an event silently: it is flagged (AC-P3-002-6).
  */
 export function receiveExternalEvent(S: AppData, companyId: CompanyId, p: ExternalPayload): { outcome: 'created' | 'duplicate-ignored' | 'flagged'; recordId: string | null } {
   const conn = connectionFor(S, companyId, p.source)!

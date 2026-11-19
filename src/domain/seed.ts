@@ -1,13 +1,14 @@
 // Demo data. History is produced by running the real engine forward in simulated time,
 // so fairness counts, ownership history, SLA alerts, audit log, reports and insights all agree.
 
-import { COMPANIES, DEFAULT_PARAMS, EMPTY_FIELDS } from './constants'
+import { COMPANIES, DEFAULT_PARAMS, DEFAULT_SALES_CONFIG, EMPTY_FIELDS } from './constants'
 import * as E from './engine'
+import * as SA from './sales'
 import { refreshInsights, mulberry32 } from './insights'
-import type { Ad, AppData, Campaign, CompanyId, Connection, CustomerFields, Enquiry, EnquiryChannel, Lead, MessageStatus, User } from './types'
+import type { Ad, AppData, Campaign, CompanyId, Connection, CustomerFields, Enquiry, EnquiryChannel, Lead, MessageStatus, PreferredContact, User } from './types'
 import { DAY, HOUR, MIN, fromPkt, isShiftTime, nextShiftStart, pktDayStart } from '../lib/time'
 
-export const DATA_VERSION = 4
+export const DATA_VERSION = 5
 export const SEED_START = fromPkt(2026, 9, 1)
 export const SEED_NOW = fromPkt(2026, 10, 17, 15, 10)
 
@@ -71,18 +72,25 @@ export const SOCIAL_OPENERS = OPENERS
 
 export function createBaseData(): AppData {
   const users: User[] = [
-    { id: 'u-admin', name: 'Sana Malik', role: 'admin', title: 'CRM Manager', companyIds: COMPANIES.map((c) => c.id), viewOnlyCompanyIds: [], joinedAt: fromPkt(2026, 1, 5) },
-    { id: 'u-mkt1', name: 'Hamza Qureshi', role: 'marketing', title: 'Marketing Executive', companyIds: ['flightnest', 'holidaynest', 'trip2go'], viewOnlyCompanyIds: ['travelope'], joinedAt: fromPkt(2026, 1, 5) },
-    { id: 'u-mkt2', name: 'Ayesha Raza', role: 'marketing', title: 'Marketing Executive', companyIds: ['travelope', 'schengentravel', 'trip2goglobal'], viewOnlyCompanyIds: [], joinedAt: fromPkt(2026, 1, 5) },
+    { id: 'u-admin', name: 'Sana Malik', role: 'admin', title: 'Admin / CRM Manager', companyIds: COMPANIES.map((c) => c.id), viewOnlyCompanyIds: [], joinedAt: fromPkt(2026, 1, 5), permissions: [] },
+    // v1.4: the Manager is assigned the Reassignment and Booking Margin Override permissions; sees all companies through the switcher
+    { id: 'u-mgr', name: 'Imran Sheikh', role: 'manager', title: 'Sales & Marketing Manager', companyIds: COMPANIES.map((c) => c.id), viewOnlyCompanyIds: [], joinedAt: fromPkt(2026, 1, 5), permissions: ['reassignment', 'booking_margin_override'] },
+    { id: 'u-mkt1', name: 'Hamza Qureshi', role: 'marketing', title: 'Marketing Executive', companyIds: ['flightnest', 'holidaynest', 'trip2go'], viewOnlyCompanyIds: ['travelope'], joinedAt: fromPkt(2026, 1, 5), permissions: [] },
+    { id: 'u-mkt2', name: 'Ayesha Raza', role: 'marketing', title: 'Marketing Executive', companyIds: ['travelope', 'schengentravel', 'trip2goglobal'], viewOnlyCompanyIds: [], joinedAt: fromPkt(2026, 1, 5), permissions: [] },
+    // Sales back-office roles. Their company scope is a placeholder (all companies) until the Roles & Permissions document is provided.
+    { id: 'u-acc', name: 'Rizwan Haider', role: 'accounts', title: 'Accounts', companyIds: COMPANIES.map((c) => c.id), viewOnlyCompanyIds: [], joinedAt: fromPkt(2026, 1, 5), permissions: [] },
+    { id: 'u-proc', name: 'Sobia Nawaz', role: 'processing', title: 'Processing (Fulfilment)', companyIds: COMPANIES.map((c) => c.id), viewOnlyCompanyIds: [], joinedAt: fromPkt(2026, 1, 5), permissions: [] },
+    { id: 'u-help', name: 'Adeel Shah', role: 'helpline', title: 'Helpline', companyIds: COMPANIES.map((c) => c.id), viewOnlyCompanyIds: [], joinedAt: fromPkt(2026, 1, 5), permissions: [] },
   ]
   for (const [c, name] of TEAM_LEADS) {
-    users.push({ id: `u-tl-${c}`, name, role: 'teamlead', title: 'Sales Team Lead', companyIds: [c], viewOnlyCompanyIds: [], joinedAt: fromPkt(2026, 1, 5) })
+    // Team Lead status does not grant reassignment or override permission by default (P3-FR-001)
+    users.push({ id: `u-tl-${c}`, name, role: 'teamlead', title: 'Sales Team Lead', companyIds: [c], viewOnlyCompanyIds: [], joinedAt: fromPkt(2026, 1, 5), permissions: [] })
   }
   for (const c of COMPANIES) {
     AGENTS[c.id].forEach((name, i) => {
       users.push({
         id: `u-${c.id}-${i + 1}`, name, role: 'agent', title: 'Sales Agent', companyIds: [c.id], viewOnlyCompanyIds: [],
-        availability: 'available', absentShiftKey: null, joinedAt: fromPkt(2026, 2, 1), rosterOrder: i + 1,
+        availability: 'available', absentShiftKey: null, joinedAt: fromPkt(2026, 2, 1), rosterOrder: i + 1, permissions: [],
       })
     })
   }
@@ -119,6 +127,8 @@ export function createBaseData(): AppData {
     metaLastRefreshedAt: null, metaAvailable: true,
     messagingSim: { nextOutcome: 'success' },
     params: structuredClone(DEFAULT_PARAMS),
+    opportunities: [], tasks: [], payments: [], bookings: [], refunds: [], cases: [], waThreads: [], documents: [],
+    salesConfig: structuredClone(DEFAULT_SALES_CONFIG),
     clock: { now: SEED_START, running: false, speed: 1 },
     seq: 100,
   }
@@ -156,76 +166,270 @@ export function buildSeed(): AppData {
   const ASK = 'Thanks for getting in touch! Could you share your full name, nationality and best contact number?'
   const ASK_PRIVATE = 'Hi! Thanks for your comment — could you share your full name, nationality and best contact number so we can send you the details?'
 
-  // ----- outcome chain after a Lead is created
+  // ----- Sales chain after a Lead is created (SAL-FR-001 … SAL-FR-006), run through the real Sales engine
+  const L = (S: AppData, id: string) => S.leads.find((x) => x.id === id)!
+  const O = (S: AppData, leadId: string) => SA.oppForLead(S, leadId)!
+  const PACKAGES: Record<CompanyId, string[]> = {
+    flightnest: ['Pakistan visit visa service', 'Umrah visa service'],
+    holidaynest: ['UAE visit visa service', 'Turkey e-visa service'],
+    trip2go: ['Maldives visa service', 'Schengen family visa service'],
+    travelope: ['Azerbaijan & Georgia visa service', 'Thailand visa service'],
+    schengentravel: ['Schengen visa service — France', 'Schengen visa service — Spain', 'Schengen visa service — Italy'],
+    trip2goglobal: ['Visa service'],
+  }
+  const DEST: Record<CompanyId, string[]> = {
+    flightnest: ['Pakistan', 'Saudi Arabia'], holidaynest: ['United Arab Emirates', 'Türkiye'], trip2go: ['Maldives', 'France'],
+    travelope: ['Azerbaijan', 'Thailand'], schengentravel: ['France', 'Spain', 'Italy'], trip2goglobal: ['France'],
+  }
+  const firstContact = (leadId: string) => {
+    at(S.clock.now, (S) => {
+      const l = L(S, leadId)
+      if (!l.ownerId || l.firstContactAt) return
+      const o = O(S, leadId)
+      const channel = rnd() < 0.7 ? 'call' : 'whatsapp'
+      if (rnd() < 0.22) {
+        // No answer first: the callback becomes a dated task, then the agent reaches the client
+        const cb = S.clock.now + between(30, 120) * MIN
+        SA.logAttempt(S, o.id, { channel: 'call', outcome: pick(['no_answer', 'voicemail', 'busy'] as const), callbackAt: cb, completeContactTask: false }, l.ownerId)
+        at(cb + between(0, 15) * MIN, (S) => {
+          const l2 = L(S, leadId)
+          if (!l2.ownerId || l2.firstContactAt) return
+          const o2 = O(S, leadId)
+          SA.logAttempt(S, o2.id, { channel: 'call', outcome: 'answered', completeContactTask: true, recordFirstContact: true }, l2.ownerId)
+          for (const tk of S.tasks.filter((x) => x.oppId === o2.id && x.kind === 'callback' && !x.doneAt)) SA.completeTask(S, tk.id, l2.ownerId)
+          SA.setStage(S, o2.id, 'contacting', l2.ownerId)
+          progress(leadId, S.clock.now)
+        })
+        return
+      }
+      SA.logAttempt(S, o.id, { channel, outcome: 'answered', completeContactTask: true, recordFirstContact: true }, l.ownerId)
+      SA.setStage(S, o.id, 'contacting', l.ownerId)
+      if (channel === 'whatsapp' || rnd() < 0.35) {
+        const agent = S.users.find((u) => u.id === l.ownerId)!
+        SA.sendWhatsApp(S, o.id, `Hi ${l.fields.fullName.split(' ')[0]}, this is ${agent.name.split(' ')[0]} from ${E.companyName(S, l.companyId)}. Thanks for your enquiry — when is a good time to talk about your trip?`, l.ownerId)
+        const t2 = S.clock.now + between(3, 40) * MIN
+        at(t2, (S) => { SA.simulateWhatsAppInbound(S, O(S, leadId).id, pick(['Hi, now is fine 👍', 'Can you call me after 6?', 'Yes please send the details here', 'Thanks! What documents do you need?'])) })
+      }
+      progress(leadId, S.clock.now)
+    })
+  }
+
   const followUps = (lead: Lead, createdAt: number, forceUncontacted = false) => {
     const contactBase = isShiftTime(createdAt) ? createdAt : nextShiftStart(createdAt)
     const late = rnd() < 0.14
     const contactAt = contactBase + (late ? between(62, 105) : between(4, 50)) * MIN
-    if (!forceUncontacted) {
-      at(contactAt, (S) => {
-        const l = S.leads.find((x) => x.id === lead.id)!
-        if (!l.ownerId || l.firstContactAt) return
-        E.recordFirstContact(S, l.id, l.ownerId)
-        progress(l.id, S.clock.now)
-      })
-    }
-    // A manager steps in on Leads left Unassigned (none eligible); Trip2GoGlobal has no agents.
+    if (!forceUncontacted) at(contactAt, () => firstContact(lead.id))
+    // A Manager steps in on Leads left Unassigned (all Absent); Trip2GoGlobal has no agents.
     at(Math.max(createdAt, contactBase) + 25 * MIN, (S) => {
-      const l = S.leads.find((x) => x.id === lead.id)!
+      const l = L(S, lead.id)
       if (l.ownerId || l.companyId === 'trip2goglobal' || !isShiftTime(S.clock.now)) return
       const agents = E.companyAgents(S, l.companyId).filter((a) => !E.isAbsent(a, S.clock.now))
       if (!agents.length) return
-      const target = agents.sort((a, b) => E.activeLeadCount(S, a.id) - E.activeLeadCount(S, b.id))[0]
-      E.manualAssign(S, l.id, target.id, 'u-admin', 'No eligible agent at intake — assigned by Manager')
-      progressAfterManual(l.id)
-    })
-  }
-  const progressAfterManual = (leadId: string) => {
-    at(S.clock.now + between(5, 40) * MIN, (S) => {
-      const l = S.leads.find((x) => x.id === leadId)!
-      if (!l.ownerId || l.firstContactAt) return
-      E.recordFirstContact(S, l.id, l.ownerId)
-      progress(l.id, S.clock.now)
+      const target = agents.sort((a, b) => E.uncontactedCount(S, a.id) - E.uncontactedCount(S, b.id))[0]
+      E.manualAssign(S, l.id, target.id, 'u-mgr', 'Left Unassigned at intake — assigned by Manager')
+      at(S.clock.now + between(5, 40) * MIN, () => firstContact(lead.id))
     })
   }
   const note = (S: AppData, l: Lead, text: string) => { if (l.ownerId) E.addNote(S, l.id, text, l.ownerId) }
   const lossReason = () => pick(['Price too high', 'Price too high', 'Booked elsewhere', 'No response from client', 'No response from client', 'Travel plans changed', 'Visa / documents issue', 'Other'])
+
+  const qualify = (S: AppData, l: Lead) => {
+    const o = O(S, l.id)
+    const dest = pick(DEST[l.companyId])
+    const base = o.applicants[0]
+    const dob = `19${Math.floor(between(60, 99))}-0${Math.floor(between(1, 9))}-1${Math.floor(between(0, 9))}`
+    const apps: { id: string; data: Record<string, string> }[] = [{ id: base.id, data: { ...base.data, 'travel.destination': dest, 'travel.visaType': pick(['Tourist', 'Family visit', 'Short stay']), 'travel.purpose': pick(['Holiday', 'Visiting family', 'Wedding']), 'travel.travelDate': `2026-1${Math.floor(between(1, 2))}-${10 + Math.floor(between(0, 18))}`, 'applicant.dob': dob, 'applicant.passportNumber': `${Math.floor(between(100000000, 999999999))}`, 'applicant.passportExpiry': `2031-0${Math.floor(between(1, 9))}-15`, 'applicant.visaStatus': pick(['British citizen', 'Indefinite leave to remain', 'Skilled worker visa']), 'work.status': pick(['Employed', 'Self-employed', 'Student', 'Retired']), 'contact.postcode': `${pick(['B', 'M', 'LS', 'E', 'BD'])}${Math.floor(between(1, 20))} ${Math.floor(between(1, 9))}AB` } }]
+    if (rnd() < 0.3) {
+      const fn = makePerson(l.companyId, rnd)
+      apps.push({ id: '', data: { 'applicant.fullName': `${fn.fullName.split(' ')[0]} ${l.fields.fullName.split(' ').slice(-1)[0]}`, 'applicant.nationality': l.fields.nationality, 'travel.destination': dest, 'applicant.dob': dob } as Record<string, string> })
+    }
+    SA.saveQualification(S, o.id, apps, l.ownerId!)
+  }
+
+  const runCase = (leadId: string) => {
+    // Processing records options → agent records the customer's choice → Processing books the appointment
+    at(S.clock.now + between(1, 20) * HOUR, (S) => {
+      const c = SA.caseOf(S, O(S, leadId))
+      if (!c) return
+      const dest = O(S, leadId).applicants[0].data['travel.destination'] ?? 'France'
+      SA.addVisaOption(S, c.id, { country: dest, centre: pick(['London', 'Manchester', 'Birmingham']), date: '2026-11-0' + Math.floor(between(3, 9)), time: '10:30' }, 'u-proc')
+      SA.addVisaOption(S, c.id, { country: dest, centre: pick(['London', 'Edinburgh', 'Cardiff']), date: '2026-11-1' + Math.floor(between(0, 9)), time: '14:15' }, 'u-proc')
+      SA.sendOptionsToAgent(S, c.id, 'u-proc')
+      at(S.clock.now + between(2, 26) * HOUR, (S) => {
+        const o = O(S, leadId)
+        const c2 = SA.caseOf(S, o)!
+        const owner = L(S, leadId).ownerId
+        if (!owner) return
+        SA.recordSelection(S, c2.id, pick(c2.options).id, owner)
+        at(S.clock.now + between(1, 20) * HOUR, (S) => {
+          const o3 = O(S, leadId)
+          const c3 = SA.caseOf(S, o3)!
+          SA.recordAppointment(S, c3.id, `APT-${Math.floor(between(100000, 999999))}`, 'u-proc')
+          const settle = () => {
+            const c4 = SA.caseOf(S, O(S, leadId))!
+            for (const it of c4.checklist.filter((i) => i.owner === 'processing')) SA.toggleChecklistItem(S, c4.id, it.key, true, 'u-proc')
+          }
+          const balance = SA.paymentTotals(S, o3).outstanding
+          const after = (fn: () => void, h: number) => at(S.clock.now + h * HOUR, fn)
+          const finish = () => {
+            after(() => {
+              settle()
+              const owner2 = L(S, leadId).ownerId
+              const c5 = SA.caseOf(S, O(S, leadId))!
+              if (!owner2) return
+              for (const it of c5.checklist.filter((i) => i.owner === 'sales')) SA.toggleChecklistItem(S, c5.id, it.key, true, owner2)
+              after(() => {
+                if (SA.completenessCheck(S, c5.id, owner2).ok) SA.markPackSent(S, c5.id, rnd() < 0.85 ? 'whatsapp' : 'email', owner2)
+                after(() => {
+                  if (rnd() < 0.15) return
+                  SA.recordOutcome(S, c5.id, rnd() < 0.82 ? 'granted' : 'refused', 'u-proc')
+                  const o6 = O(S, leadId)
+                  const c6 = SA.caseOf(S, o6)!
+                  if (c6.outcome?.result === 'granted') {
+                    // The agent works the review task most of the time (tasks never change the stage)
+                    at(S.clock.now + between(2, 40) * HOUR, (S) => {
+                      const ow = L(S, leadId).ownerId
+                      if (!ow) return
+                      for (const tk of S.tasks.filter((x) => x.oppId === O(S, leadId).id && !x.doneAt && (x.kind === 'review' ? rnd() < 0.85 : x.kind === 'referral' && rnd() < 0.4))) SA.completeTask(S, tk.id, ow)
+                    })
+                  }
+                  if (c6.outcome?.result === 'granted' && rnd() < 0.35) {
+                    at(S.clock.now + between(2, 48) * HOUR, (S) => {
+                      const ow = L(S, leadId).ownerId
+                      if (ow) SA.createReferral(S, O(S, leadId).id, { ...makePerson(o6.companyId, rnd), tripDetails: 'Referred by an existing customer' }, ow)
+                    })
+                  }
+                  if (c6.outcome?.result === 'refused' && rnd() < 0.6) {
+                    at(S.clock.now + between(4, 30) * HOUR, (S) => {
+                      const b = SA.bookingOf(S, O(S, leadId))!
+                      SA.requestRefund(S, b.id, Math.min(SA.paymentTotals(S, O(S, leadId)).paid, 40 + Math.round(between(0, 6)) * 10), 'Visa refused — customer asked for the service fee back (partial, per terms)', 'u-help')
+                      if (rnd() < 0.7) at(S.clock.now + between(3, 30) * HOUR, (S) => { const rf = S.refunds.find((r) => r.bookingId === b.id && r.status === 'requested'); if (rf) SA.decideRefund(S, rf.id, rnd() < 0.85, 'u-acc') })
+                    })
+                  }
+                }, between(72, 240))
+              }, between(4, 30))
+            }, between(4, 40))
+          }
+          if (balance > 0) {
+            // Balance gate: the agent collects the rest, Accounts confirms it, then work continues
+            after(() => {
+              const owner3 = L(S, leadId).ownerId
+              if (!owner3) return
+              const res = SA.submitPayment(S, O(S, leadId).id, { type: 'full', amount: 0, proofName: `balance-transfer-${Math.floor(between(1000, 9999))}.pdf` }, owner3)
+              if (res.ok && res.id) after(() => { SA.decidePayment(S, res.id!, 'confirm', 'u-acc'); finish() }, between(2, 20))
+            }, between(6, 60))
+          } else finish()
+        })
+      })
+    })
+  }
+
+  const book = (leadId: string) => {
+    const l = L(S, leadId)
+    if (!l.ownerId) return
+    const o = O(S, leadId)
+    const total = o.quote!.agreedAmount
+    const partial = rnd() < 0.35
+    const res = SA.submitPayment(S, o.id, partial ? { type: 'partial', amount: Math.max(50, Math.round(total * between(0.3, 0.6))), proofName: `deposit-${Math.floor(between(1000, 9999))}.jpg` } : { type: 'full', amount: 0, proofName: `bank-transfer-${Math.floor(between(1000, 9999))}.pdf` }, l.ownerId)
+    if (!res.ok || !res.id) return
+    at(S.clock.now + between(1, 18) * HOUR, (S) => {
+      if (rnd() < 0.08) {
+        SA.decidePayment(S, res.id!, 'reject', 'u-acc', 'Proof does not show the transfer reference')
+        at(S.clock.now + between(2, 20) * HOUR, () => book(leadId))
+        return
+      }
+      SA.decidePayment(S, res.id!, 'confirm', 'u-acc')
+      const o2 = O(S, leadId)
+      if (!o2.bookingId && SA.isNotBookable(S, o2) && rnd() < 0.6) {
+        at(S.clock.now + between(1, 20) * HOUR, (S) => { SA.overrideMargin(S, o2.id, 'u-mgr', 'Repeat customer — approved below threshold') })
+      }
+      at(S.clock.now + between(1.5, 22) * HOUR, (S) => {
+        const o3 = O(S, leadId)
+        if (!o3.bookingId) return
+        const b = SA.bookingOf(S, o3)!
+        note(S, L(S, leadId), `Booking ${b.ref} confirmed.`)
+        if (b.invoice.status === 'sent' && rnd() < 0.8) at(S.clock.now + between(2, 72) * HOUR, (S) => { SA.simulateSignature(S, b.id) })
+        if (rnd() < 0.55) at(S.clock.now + between(24, 200) * HOUR, (S) => { SA.recordExpense(S, b.id, Math.round(between(55, 110)), pick(['Appointment fee and insurance policy', 'Insurance + hotel deposit', 'Appointment booking fee']), 'u-acc') })
+        if (rnd() < 0.5) {
+          const ow = L(S, leadId).ownerId
+          if (ow) SA.uploadDocument(S, o3.id, { name: `passport-${L(S, leadId).fields.fullName.split(' ')[0].toLowerCase()}.pdf`, kind: 'passport', sizeKb: between(300, 2400) }, ow)
+        }
+        runCase(leadId)
+      })
+    })
+  }
+
   const progress = (leadId: string, t: number) => {
     const r = rnd()
     if (r < 0.74) {
       at(t + between(0.2, 30) * HOUR, (S) => {
-        const l = S.leads.find((x) => x.id === leadId)!
+        const l = L(S, leadId)
         if (!l.ownerId || l.status !== 'lead') return
         E.setStatus(S, l.id, 'mature', l.ownerId)
-        note(S, l, pick(['Client engaged on WhatsApp — sent a quotation.', 'Spoke to client, shared options and prices.', 'Client replied to call-back; quotation sent by email.']))
+        qualify(S, l)
+        SA.setStage(S, O(S, leadId).id, 'qualified', l.ownerId)
+        note(S, l, pick(['Client engaged on WhatsApp — qualification taken.', 'Spoke to client, collected travel and applicant details.', 'Client replied to call-back; details recorded.']))
         const r2 = rnd()
         if (r2 < 0.45) {
           at(S.clock.now + between(20, 90) * HOUR, (S) => {
-            const l2 = S.leads.find((x) => x.id === leadId)!
+            const l2 = L(S, leadId)
             if (!l2.ownerId || l2.status !== 'mature') return
             E.setStatus(S, l2.id, 'hot', l2.ownerId)
-            note(S, l2, pick(['Client confirmed dates, awaiting passport copies.', 'Client wants to proceed this week — holding fare.', 'Revised quote accepted in principle.']))
-            const r3 = rnd()
-            at(S.clock.now + between(20, 110) * HOUR, (S) => {
-              const l3 = S.leads.find((x) => x.id === leadId)!
+            const o = O(S, leadId)
+            const low = rnd() < 0.1
+            const pkg = pick(PACKAGES[l2.companyId])
+            const flightReq = rnd() < 0.4
+            SA.saveQuote(S, o.id, { packageName: pkg, agreedAmount: low ? Math.round(between(120, 150)) : Math.round(between(17, 45)) * 10, flightReservation: { required: flightReq, paid: flightReq && rnd() < 0.5 }, hotelReservationCompanyCost: rnd() < 0.5, addOns: { actualFlight: rnd() < 0.12, actualHotel: rnd() < 0.08 } }, l2.ownerId)
+            SA.setStage(S, o.id, 'quoted', l2.ownerId)
+            note(S, l2, pick(['Quote agreed in principle.', 'Client accepted the package price.', 'Revised quote accepted.']))
+            at(S.clock.now + between(2, 30) * HOUR, (S) => {
+              const l3 = L(S, leadId)
               if (!l3.ownerId || l3.status !== 'hot') return
-              if (r3 < 0.55) { E.setStatus(S, l3.id, 'booked', l3.ownerId); note(S, l3, 'Booking confirmed, deposit received.') }
-              else if (r3 < 0.8) E.setStatus(S, l3.id, 'lost', l3.ownerId, lossReason())
+              const o3 = O(S, leadId)
+              SA.generateDraft(S, o3.id, l3.ownerId)
+              SA.setStage(S, o3.id, 'data_verification', l3.ownerId)
+              if (rnd() < 0.2) SA.requestDraftCorrections(S, o3.id, 'Customer asked to fix the date of birth spelling', l3.ownerId)
+              const r3 = rnd()
+              at(S.clock.now + between(2, 60) * HOUR, (S) => {
+                const l4 = L(S, leadId)
+                if (!l4.ownerId || l4.status !== 'hot') return
+                const o4 = O(S, leadId)
+                if (r3 < 0.6) {
+                  if (SA.latestDraft(o4)?.status !== 'unverified') {
+                    const a = { ...o4.applicants[0], data: { ...o4.applicants[0].data, 'applicant.dob': (o4.applicants[0].data['applicant.dob'] ?? '1990-01-0').slice(0, -1) + '5' } }
+                    SA.saveQualification(S, o4.id, [a, ...o4.applicants.slice(1)], l4.ownerId)
+                    if (SA.draftOutOfDate(o4)) SA.generateDraft(S, o4.id, l4.ownerId)
+                  }
+                  SA.recordDraftApproval(S, o4.id, rnd() < 0.8 ? 'whatsapp' : 'email', l4.ownerId)
+                  book(leadId)
+                } else if (r3 < 0.82) {
+                  SA.markLost(S, o4.id, lossReason(), l4.ownerId)
+                } else if (rnd() < 0.5) {
+                  SA.setDormant(S, o4.id, true, l4.ownerId)
+                } else {
+                  SA.createTask(S, o4.id, { kind: 'follow_up', title: 'Follow up on the draft approval', due: { mode: 'exact', at: S.clock.now + between(10, 70) * HOUR } }, l4.ownerId)
+                }
+              })
             })
           })
         } else if (r2 < 0.8) {
           at(S.clock.now + between(24, 120) * HOUR, (S) => {
-            const l2 = S.leads.find((x) => x.id === leadId)!
+            const l2 = L(S, leadId)
             if (!l2.ownerId || l2.status !== 'mature') return
-            E.setStatus(S, l2.id, 'lost', l2.ownerId, lossReason())
+            SA.markLost(S, O(S, leadId).id, lossReason(), l2.ownerId)
+          })
+        } else if (rnd() < 0.5) {
+          at(S.clock.now + between(24, 120) * HOUR, (S) => {
+            const l2 = L(S, leadId)
+            if (l2.ownerId && l2.status === 'mature') SA.setDormant(S, O(S, leadId).id, true, l2.ownerId)
           })
         }
       })
     } else if (r < 0.86) {
       at(t + between(20, 72) * HOUR, (S) => {
-        const l = S.leads.find((x) => x.id === leadId)!
+        const l = L(S, leadId)
         if (!l.ownerId || l.status !== 'lead') return
-        E.setStatus(S, l.id, 'lost', l.ownerId, pick(['No response from client', 'No response from client', 'Travel plans changed', 'Price too high']))
+        SA.markLost(S, O(S, leadId).id, pick(['No response from client', 'No response from client', 'Travel plans changed', 'Price too high']), l.ownerId)
       })
     }
   }
@@ -240,6 +444,8 @@ export function buildSeed(): AppData {
         const t = day + off
         if (t > SEED_NOW) continue
         const recentUncontacted = SEED_NOW - t < 80 * MIN && rnd() < 0.6
+        // Some form Leads carry a preferred contact time (SAL-FR-001): an exact UK time or a vague window
+        const pref: PreferredContact | null = rnd() < 0.35 ? (rnd() < 0.5 ? { mode: 'window', label: pick(['Evening', 'Morning', 'After 6pm', 'Lunchtime']) } : { mode: 'exact', at: Math.round((t + between(1, 26) * HOUR) / (15 * MIN)) * 15 * MIN }) : null
         const r = rnd()
         const companyCampaigns = S.campaigns.filter((x) => x.companyId === c.id)
         if (c.id !== 'trip2goglobal' && r < 0.55) {
@@ -248,13 +454,13 @@ export function buildSeed(): AppData {
           const ad = cmp ? pick(S.ads.filter((a) => a.campaignId === cmp.id)) : null
           const fields = person(c.id)
           at(t, (S) => {
-            const res = E.receiveExternalEvent(S, c.id, { kind: 'lead', source: 'meta_form', fields, campaignId: cmp?.id ?? null, adId: ad?.id ?? null, externalId: `leadgen_${++extSeq}` })
+            const res = E.receiveExternalEvent(S, c.id, { kind: 'lead', source: 'meta_form', fields, campaignId: cmp?.id ?? null, adId: ad?.id ?? null, externalId: `leadgen_${++extSeq}`, preferredContact: pref })
             if (res.outcome === 'created') followUps(S.leads.find((l) => l.id === res.recordId)!, t, recentUncontacted)
           })
         } else if (r < 0.7 || c.id === 'trip2goglobal') {
           const fields = person(c.id)
           at(t, (S) => {
-            const res = E.receiveExternalEvent(S, c.id, { kind: 'lead', source: 'website', fields, campaignId: null, adId: null, externalId: `web_${++extSeq}` })
+            const res = E.receiveExternalEvent(S, c.id, { kind: 'lead', source: 'website', fields, campaignId: null, adId: null, externalId: `web_${++extSeq}`, preferredContact: pref })
             if (res.outcome === 'created') followUps(S.leads.find((l) => l.id === res.recordId)!, t, recentUncontacted)
           })
         } else if (r < 0.9) {
@@ -312,7 +518,7 @@ export function buildSeed(): AppData {
       const c = pick(['flightnest', 'holidaynest', 'trip2go', 'travelope'] as CompanyId[])
       at(day + 14 * HOUR + 3 * MIN, (S) => {
         const a = pick(E.companyAgents(S, c))
-        E.setAbsent(S, a.id, true, 'u-admin')
+        E.setAbsent(S, a.id, true, rnd() < 0.5 ? 'u-mgr' : 'u-admin')
       })
     }
     // Occasional manual reassignment by a manager
@@ -324,14 +530,14 @@ export function buildSeed(): AppData {
         const l = pick(cand)
         const others = E.companyAgents(S, c).filter((a) => a.id !== l.ownerId && !E.isAbsent(a, S.clock.now) && a.availability === 'available')
         if (!others.length) return
-        const actor = rnd() < 0.6 ? 'u-admin' : `u-tl-${c}`
-        E.manualAssign(S, l.id, pick(others).id, actor, pick(['Original owner on a long call', 'Customer asked for a Urdu speaker', 'Balancing workload', 'Owner stepped away']))
-        progressAfterManual(l.id)
+        const actor = rnd() < 0.6 ? 'u-mgr' : 'u-admin'
+        const res = E.manualAssign(S, l.id, pick(others).id, actor, pick(['Original owner on a long call', 'Customer asked for a Urdu speaker', 'Balancing workload', 'Owner stepped away']))
+        if (res.ok) at(S.clock.now + between(5, 40) * MIN, () => firstContact(l.id))
       })
     }
   }
 
-  // Mid-month new agent (P1-FR-003 baseline)
+  // New agent added later: starting score = team average (placeholder — to be confirmed in v1.4)
   at(fromPkt(2026, 10, 10, 14, 30), (S) => { E.addAgent(S, { name: 'Noor Fatima', companyId: 'holidaynest' }, 'u-admin') })
 
   // Today: shift-start Absent marking, a simulated connection failure, an agent on a break, insights refresh
@@ -339,7 +545,7 @@ export function buildSeed(): AppData {
     const agents = E.companyAgents(S, 'flightnest')
     const pending = (id: string) => S.leads.filter((l) => l.ownerId === id && l.assignedInOffTime && !l.firstContactAt).length
     const target = agents.sort((a, b) => pending(b.id) - pending(a.id))[0]
-    E.setAbsent(S, target.id, true, 'u-admin')
+    E.setAbsent(S, target.id, true, 'u-mgr')
   })
   at(fromPkt(2026, 10, 17, 13, 20), (S) => E.setConnectionError(S, 'cn-trip2go-meta_forms', 'Webhook delivery failed — access token rejected (simulated)'))
   at(fromPkt(2026, 10, 17, 14, 50), (S) => E.setAvailability(S, 'u-flightnest-2', 'unavailable', 'u-flightnest-2'))
@@ -408,7 +614,9 @@ export function buildSeed(): AppData {
 
   // ----- run the simulation
   S.clock.now = SEED_START
+  let guard = 0
   while (queue.length) {
+    if (++guard > 400_000) throw new Error(`Seed did not settle: ${queue.length} events still queued at ${new Date(queue[0].t).toISOString()}`)
     const ev = queue.shift()!
     E.advanceTo(S, ev.t)
     ev.run(S)
@@ -417,6 +625,8 @@ export function buildSeed(): AppData {
 
   const todayShift = fromPkt(2026, 10, 17, 14, 0)
   for (const n of S.notifications) if (n.at < todayShift) n.read = true
+  // Sales notifications older than a day are treated as read so the bell shows today's work
+  for (const n of S.notifications) if (n.type === 'sales' && n.at < SEED_NOW - DAY) n.read = true
   S.clock = { now: SEED_NOW, running: true, speed: 1 }
   return S
 }

@@ -6,13 +6,13 @@ import { AgentStateBadge, slaInfo, StatusPill } from '../domain'
 import { useAppData, useMe } from '@/store/store'
 import { useAction } from '@/store/hooks'
 import {
-  addNote, agentState, activeLeadCount, companyAgents, editNote, fairnessScore, manualAssign, recordFirstContact, setStatus, userName, isAbsent,
+  addNote, agentState, uncontactedCount, companyAgents, editNote, fairnessScore, manualAssign, recordFirstContact, setStatus, userName, isAbsent,
 } from '@/domain/engine'
 import { ALL_STATUSES, FUNNEL_ORDER, STATUS_DESC, STATUS_LABEL } from '@/domain/constants'
 import type { FunnelStatus, Lead, OwnershipChangeKind } from '@/domain/types'
-import { SLA_MS, fmtDateTime, fmtDuration, fmtTime, monthKey } from '@/lib/time'
+import { SLA_MS, fmtDateTime, fmtDuration, fmtTime } from '@/lib/time'
 
-// ------------------------------------------------------------------ Assign / reassign (P3-FR-002)
+// ------------------------------------------------------------------ Assign / reassign (P1-FR-002 — Reassignment permission)
 
 export function AssignDialog({ lead, open, onClose }: { lead: Lead; open: boolean; onClose: () => void }) {
   const S = useAppData()
@@ -21,8 +21,7 @@ export function AssignDialog({ lead, open, onClose }: { lead: Lead; open: boolea
   const [agentId, setAgentId] = useState('')
   const [reason, setReason] = useState('')
   const [tried, setTried] = useState(false)
-  const agents = companyAgents(S, lead.companyId) // only agents of the Lead's own company (AC-P3-002-6)
-  const month = monthKey(S.clock.now)
+  const agents = companyAgents(S, lead.companyId) // only agents of the Lead's own company (AC-P1-002-11)
   const target = agents.find((a) => a.id === agentId)
   const targetState = target ? agentState(S, target, S.clock.now) : null
   const warn = targetState && targetState !== 'available'
@@ -39,7 +38,7 @@ export function AssignDialog({ lead, open, onClose }: { lead: Lead; open: boolea
   return (
     <Dialog open={open} onClose={onClose} size="lg"
       title={isReassign ? `Reassign ${lead.ref}` : `Assign ${lead.ref}`}
-      description={<>Manual assignment skips the automatic eligibility filters and is recorded in the ownership history and audit log. Only agents of <b>{S.companies.find((c) => c.id === lead.companyId)?.name}</b> can be chosen.</>}
+      description={<>Needs the Reassignment permission. The change is kept in the ownership history and audit log with your name and the time. Only agents of <b>{S.companies.find((c) => c.id === lead.companyId)?.name}</b> can be chosen. The normal SLA rules apply to the new owner.</>}
       footer={<>
         <Button variant="ghost" onClick={onClose}>Cancel</Button>
         <Button variant="primary" onClick={submit} disabled={!agentId}>{warn ? (isReassign ? 'Reassign anyway' : 'Assign anyway') : isReassign ? 'Reassign Lead' : 'Assign Lead'}</Button>
@@ -51,13 +50,13 @@ export function AssignDialog({ lead, open, onClose }: { lead: Lead; open: boolea
         <div className="space-y-4">
           <div className="overflow-hidden rounded-xl ring-1 ring-slate-200">
             <div className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-3 border-b border-slate-100 bg-slate-50 px-4 py-2 text-[11px] font-semibold tracking-wide text-slate-500 uppercase">
-              <span>Agent</span><span>Status</span><span className="w-16 text-right">Active</span><span className="w-12 text-right">Score</span>
+              <span>Agent</span><span>Status</span><span className="w-20 text-right" title="Assigned Leads with no first contact yet">Uncontacted</span><span className="w-12 text-right">Score</span>
             </div>
             <div role="radiogroup" className="max-h-72 divide-y divide-slate-100 overflow-y-auto">
               {agents.map((a) => {
                 const st = agentState(S, a, S.clock.now)
                 const isOwner = a.id === lead.ownerId
-                const sc = fairnessScore(S, a.id, month)
+                const sc = fairnessScore(S, a.id)
                 return (
                   <label key={a.id} className={cn('grid cursor-pointer grid-cols-[1fr_auto_auto_auto] items-center gap-3 px-4 py-2.5 transition', agentId === a.id ? 'bg-brand-50/70' : 'hover:bg-slate-50', isOwner && 'cursor-not-allowed opacity-50')}>
                     <span className="flex min-w-0 items-center gap-2.5">
@@ -66,7 +65,7 @@ export function AssignDialog({ lead, open, onClose }: { lead: Lead; open: boolea
                       <span className="truncate text-[13px] font-medium text-slate-800">{a.name}{isOwner && <span className="ml-1.5 text-[11.5px] font-normal text-slate-500">(current owner)</span>}</span>
                     </span>
                     <AgentStateBadge state={st} />
-                    <span className="w-16 text-right text-[12.5px] text-slate-600 tabular-nums">{activeLeadCount(S, a.id)} / {S.params.capacity}</span>
+                    <span className="w-20 text-right text-[12.5px] text-slate-600 tabular-nums">{uncontactedCount(S, a.id)}</span>
                     <span className="w-12 text-right text-[12.5px] font-semibold text-slate-700 tabular-nums">{sc.score}</span>
                   </label>
                 )
@@ -74,16 +73,17 @@ export function AssignDialog({ lead, open, onClose }: { lead: Lead; open: boolea
             </div>
           </div>
           {warn && target && (
-            <Callout tone="warning" icon={AlertTriangle} title={`${target.name} is ${targetState === 'at-capacity' ? 'at capacity' : targetState}`}>
-              A manual assignment skips the eligibility filters. Please confirm this override. <PendingTag title="Whether a manual assignment may override capacity or an Unavailable status is to be confirmed (P3-FR-002).">Override rule to be confirmed</PendingTag>
+            <Callout tone="warning" icon={AlertTriangle} title={`${target.name} is ${targetState === 'absent' ? 'marked Absent' : 'Unavailable'}`}>
+              {targetState === 'absent' ? 'They are not working this shift.' : 'The SLA timer will not start until they are Available.'} Please confirm you want to give them this Lead.
             </Callout>
           )}
           <Field label={<span className="flex items-center gap-2">Reason <PendingTag title="Whether a reassignment needs a reason field is to be confirmed.">To be confirmed</PendingTag></span>} required={reasonRequired} error={tried && reasonRequired && !reason.trim() ? 'A reason is required (demo parameter)' : undefined} hint={reasonRequired ? undefined : 'Optional in this prototype.'}>
             <Textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Original owner left the shift early" className="min-h-16" />
           </Field>
           <div className="flex flex-wrap gap-x-5 gap-y-1.5 text-[12px] text-slate-500">
-            <span>SLA for new owner: <b className="text-slate-700">{S.params.slaRestartsOnReassign ? 'restarts' : 'continues'}</b> <PendingTag>Pending</PendingTag></span>
-            <span>Counts toward fairness: <b className="text-slate-700">{S.params.manualCountsTowardFairness ? 'yes' : 'no'}</b> <PendingTag>Pending</PendingTag></span>
+            <span>SLA timer for new owner: <b className="text-slate-700">{S.params.slaRestartsOnReassign ? 'restarts' : 'continues'}</b> <PendingTag>Pending</PendingTag></span>
+            <span>Counts toward the score: <b className="text-slate-700">{S.params.manualCountsTowardFairness ? 'yes' : 'no'}</b> <PendingTag>Pending</PendingTag></span>
+            <span>Previous owner notified: <b className="text-slate-700">no</b> <PendingTag>Pending</PendingTag></span>
           </div>
         </div>
       )}
@@ -127,7 +127,7 @@ export function LostReasonDialog({ lead, open, onClose }: { lead: Lead; open: bo
     if (r.ok) { onClose(); setReason(''); setTried(false) }
   }
   return (
-    <Dialog open={open} onClose={onClose} size="sm" title="Mark as Lost" description="The enquiry will not proceed. A loss reason is mandatory (MKT-BR-012)."
+    <Dialog open={open} onClose={onClose} size="sm" title="Mark as Lost" description="The enquiry will not proceed. A loss reason is mandatory (AC-P2-001-2). The Sales opportunity becomes Lost with the same reason."
       footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button variant="primary" onClick={save}>Save Lost</Button></>}
     >
       <Field label={<span className="flex items-center gap-2">Loss reason <PendingTag title="The allowed Lost reasons are to be confirmed. This list is a placeholder for design.">Placeholder list</PendingTag></span>} required error={tried && !reason ? 'Lost cannot be saved without a loss reason' : undefined}>
@@ -147,6 +147,8 @@ export function StatusControl({ lead, editable }: { lead: Lead; editable: boolea
   const [lostOpen, setLostOpen] = useState(false)
   const blockedReason = (to: FunnelStatus): string | null => {
     if (to === lead.status) return null
+    if (to === 'booked') return 'Booked Lead is set by the CRM when Accounts confirms payment and a Booking is created (SAL-FR-004)'
+    if (lead.status === 'booked') return 'This Lead has a Booking. Bookings are never cancelled from the funnel'
     if (lead.status === 'lost' && !S.params.allowReopenLost) return 'Reopening a Lost Lead is a pending decision (currently off)'
     const fi = FUNNEL_ORDER.indexOf(lead.status), ti = FUNNEL_ORDER.indexOf(to)
     if (fi >= 0 && ti >= 0 && ti < fi && !S.params.allowBackwardStatus) return 'Moving backward is a pending decision (currently off)'
@@ -181,13 +183,13 @@ export function StatusControl({ lead, editable }: { lead: Lead; editable: boolea
         })}
       </div>
       {lead.status === 'lost' && lead.lossReason && <p className="mt-2 text-[12.5px] text-slate-600">Loss reason: <b>{lead.lossReason}</b></p>}
-      {!editable && <p className="mt-2 text-[12px] text-slate-500">The funnel status is maintained by the owning Sales Agent (MKT-BR-012).</p>}
+      <p className="mt-2 text-[12px] text-slate-500">{editable ? 'Booked and Lost follow the Sales opportunity (product-owner decision, 19 Nov 2026). Mature and Hot stay agent-set until the Sales-stage mapping is confirmed.' : 'The funnel status is maintained by the owning Sales Agent and fed by Sales outcomes.'} {editable && <PendingTag title="SAL-FR-007: how detailed Sales stages map to Mature and Hot is to be confirmed.">Mapping to be confirmed</PendingTag>}</p>
       <LostReasonDialog lead={lead} open={lostOpen} onClose={() => setLostOpen(false)} />
     </div>
   )
 }
 
-// ------------------------------------------------------------------ SLA panel (P1-FR-004)
+// ------------------------------------------------------------------ SLA panel (P1-FR-003)
 
 export function SlaPanel({ lead, canContact }: { lead: Lead; canContact: boolean }) {
   const S = useAppData()
@@ -214,7 +216,7 @@ export function SlaPanel({ lead, canContact }: { lead: Lead; canContact: boolean
 
   return (
     <Card>
-      <CardHeader icon={Clock} title="One-hour contact SLA" description="P1-FR-004 · MKT-BR-010, MKT-BR-011" />
+      <CardHeader icon={Clock} title="One-hour contact SLA" description="P1-FR-003 · AC-P1-003-1 … 7" />
       <div className="space-y-4 p-5">
         <div className={cn('flex items-start gap-3 rounded-xl px-3.5 py-3 ring-1 ring-inset', h.tone, info.state === 'overdue' && 'pulse-ring')}>
           <h.icon className="mt-0.5 size-5 shrink-0" strokeWidth={2} />
@@ -235,67 +237,63 @@ export function SlaPanel({ lead, canContact }: { lead: Lead; canContact: boolean
           <Button variant="primary" icon={PhoneCall} className="w-full" onClick={() => act((d) => recordFirstContact(d, lead.id, me.id), 'First contact recorded', 'The SLA timer stopped and any pending alert was cleared.')}>Record first contact</Button>
         )}
         {!lead.firstContactAt && (
-          <p className="text-[11.5px] text-slate-500">Which action counts as first contact is <PendingTag>To be confirmed</PendingTag> — the prototype uses the “Record first contact” button.</p>
+          <p className="text-[11.5px] text-slate-500">Which action counts as first contact is <PendingTag>To be confirmed</PendingTag> — the prototype uses “Record first contact”, or the option to record it while logging a contact attempt.</p>
         )}
       </div>
     </Card>
   )
 }
 
-// ------------------------------------------------------------------ Distribution explanation (P2-FR-003)
+// ------------------------------------------------------------------ Assignment explanation (P1-FR-002: lowest-score group and chosen agent)
 
 export function TraceCard({ lead }: { lead: Lead }) {
   const S = useAppData()
   const t = lead.lastTrace
   if (!t) return null
   const name = (id: string) => userName(S, id)
-  const Step = ({ icon: Icon, label, people, tone }: { icon: typeof Filter; label: string; people: string[]; tone: string }) => (
+  const Step = ({ icon: Icon, label, people, tone, note }: { icon: typeof Filter; label: string; people?: string[]; tone: string; note?: string }) => (
     <li className="flex items-start gap-3">
       <span className={cn('mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full ring-1 ring-inset', tone)}><Icon className="size-3" strokeWidth={2.4} /></span>
       <div className="min-w-0 text-[12.5px]">
         <p className="font-medium text-slate-700">{label}</p>
-        <p className="text-slate-500">{people.length ? people.map(name).join(', ') : 'None'}</p>
+        {people && <p className="text-slate-500">{people.length ? people.map(name).join(', ') : 'None'}</p>}
+        {note && <p className="text-slate-500">{note}</p>}
       </div>
     </li>
   )
+  const inGroup = new Set(t.group)
   return (
     <Card>
       <CardHeader icon={Scale} title="Why this assignment?" description={`Automatic distribution at ${fmtDateTime(t.at)} · ${t.inShift ? 'shift time' : 'off-time'}`} />
       <div className="p-5">
         <ol className="space-y-3">
           <Step icon={Filter} label={`Company pool (${t.pool.length})`} people={t.pool} tone="bg-slate-50 text-slate-500 ring-slate-200" />
-          {t.inShift ? (
-            <>
-              <Step icon={MinusCircle} label="1 · Removed Absent" people={t.removedAbsent} tone="bg-rose-50 text-rose-500 ring-rose-200" />
-              <Step icon={MinusCircle} label="2 · Removed Unavailable" people={t.removedUnavailable} tone="bg-amber-50 text-amber-600 ring-amber-200" />
-            </>
-          ) : (
-            <li className="rounded-lg bg-indigo-50/70 px-3 py-2 text-[12px] text-indigo-800">Off-time: availability is ignored (Absent is marked at shift start).</li>
-          )}
-          {t.capacityApplied
-            ? <Step icon={MinusCircle} label={`3 · Removed at capacity (${t.capacity} active)`} people={t.removedAtCapacity} tone="bg-violet-50 text-violet-500 ring-violet-200" />
-            : <li className="rounded-lg bg-slate-50 px-3 py-2 text-[12px] text-slate-600">Capacity not applied off-time <PendingTag>Pending</PendingTag></li>}
+          <Step icon={MinusCircle} label="1 · Excluded Absent" people={t.removedAbsent} tone="bg-rose-50 text-rose-500 ring-rose-200" />
+          {t.lowestScore !== null && <Step icon={Scale} label={`2 · Lowest-score group (score ${t.lowestScore})`} people={t.group} tone="bg-brand-50 text-brand-600 ring-brand-200" />}
+          {t.lowestScore !== null && (t.inShift
+            ? <Step icon={CheckCircle2} label={t.allGroupUnavailable ? '3 · Everyone in the group is Unavailable — still assigned inside the group' : '3 · Available agents preferred inside the group'} people={t.allGroupUnavailable ? undefined : t.availableInGroup} tone={t.allGroupUnavailable ? 'bg-amber-50 text-amber-600 ring-amber-200' : 'bg-emerald-50 text-emerald-600 ring-emerald-200'} />
+            : <li className="rounded-lg bg-indigo-50/70 px-3 py-2 text-[12px] text-indigo-800">Off-time: fair share across the normal roster — availability is ignored and no SLA runs.</li>)}
         </ol>
         {t.scores.length > 0 ? (
           <div className="mt-4 overflow-hidden rounded-lg ring-1 ring-slate-200">
             <table className="w-full text-[12.5px]">
-              <thead className="bg-slate-50 text-[11px] text-slate-500 uppercase"><tr><th className="px-3 py-1.5 text-left font-semibold">Eligible agent</th><th className="px-3 py-1.5 text-right font-semibold">Count</th><th className="px-3 py-1.5 text-right font-semibold">Offset</th><th className="px-3 py-1.5 text-right font-semibold">Score</th></tr></thead>
+              <thead className="bg-slate-50 text-[11px] text-slate-500 uppercase"><tr><th className="px-3 py-1.5 text-left font-semibold">Agent (not Absent)</th><th className="px-3 py-1.5 text-left font-semibold">Status</th><th className="px-3 py-1.5 text-right font-semibold">Score</th></tr></thead>
               <tbody className="divide-y divide-slate-100">
                 {[...t.scores].sort((a, b) => a.score - b.score).map((s) => (
-                  <tr key={s.agentId} className={cn(s.agentId === t.winnerId && 'bg-emerald-50/60')}>
-                    <td className="px-3 py-1.5 font-medium text-slate-700"><span className="flex items-center gap-1.5">{s.agentId === t.winnerId && <Trophy className="size-3.5 text-emerald-600" />}{name(s.agentId)}</span></td>
-                    <td className="px-3 py-1.5 text-right tabular-nums">{s.count}</td>
-                    <td className="px-3 py-1.5 text-right tabular-nums">{s.offset}</td>
-                    <td className="px-3 py-1.5 text-right font-semibold tabular-nums">{s.score}</td>
+                  <tr key={s.agentId} className={cn(s.agentId === t.winnerId ? 'bg-emerald-50/60' : !inGroup.has(s.agentId) && 'text-slate-400')}>
+                    <td className="px-3 py-1.5 font-medium"><span className="flex items-center gap-1.5">{s.agentId === t.winnerId && <Trophy className="size-3.5 text-emerald-600" />}{name(s.agentId)}{!inGroup.has(s.agentId) && <span className="text-[11px] font-normal">· higher score, not considered</span>}</span></td>
+                    <td className="px-3 py-1.5">{t.inShift ? (s.available ? 'Available' : 'Unavailable') : '—'}</td>
+                    <td className="px-3 py-1.5 text-right font-semibold tabular-nums" title={`${s.count} counted assignments + starting score ${s.offset}`}>{s.score}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         ) : (
-          <Callout tone="warning" className="mt-4" icon={UserX}>No agent was eligible, so the Lead was left Unassigned and the Manager was notified.</Callout>
+          <Callout tone="warning" className="mt-4" icon={UserX}>No agent could be considered (every agent Absent, or the company has no agents), so the Lead was left Unassigned and Managers were notified. <PendingTag title="What happens when every agent is Absent or the company has no agents is to be confirmed (P1-FR-002).">Behaviour to be confirmed</PendingTag></Callout>
         )}
-        {t.winnerId && <p className="mt-3 flex items-center gap-1.5 text-[12.5px] text-slate-600">{t.tieBreak ? <Shuffle className="size-3.5 text-slate-400" /> : <ArrowRight className="size-3.5 text-slate-400" />}Lowest score wins{t.tieBreak ? '; tied scores broken by the rotating order' : ''} → <b>{name(t.winnerId)}</b></p>}
+        {t.winnerId && <p className="mt-3 flex items-center gap-1.5 text-[12.5px] text-slate-600">{t.tieBreak ? <Shuffle className="size-3.5 text-slate-400" /> : <ArrowRight className="size-3.5 text-slate-400" />}{t.tieBreak ? 'Tie inside the group broken by the rotating order' : 'Only one candidate'} → <b>{name(t.winnerId)}</b></p>}
+        <p className="mt-2 text-[11.5px] text-slate-500">Score = counted assignments + starting score. <PendingTag title="How the score is calculated, a new agent's starting score, any reset beyond 'not at midnight' and the tie-breaker order are to be confirmed (P1-FR-002).">Calculation to be confirmed</PendingTag></p>
       </div>
     </Card>
   )
@@ -309,7 +307,8 @@ const OWNERSHIP_LABEL: Record<OwnershipChangeKind, string> = {
   'manual-unassign': 'Unassigned manually',
   'manual-reassign': 'Reassigned manually',
   'released-absent': 'Released — owner marked Absent',
-  'unassigned-no-eligible': 'Left Unassigned — no eligible agent',
+  'unassigned-no-eligible': 'Left Unassigned — no agent available to receive it',
+  referral: 'Referral — assigned to the referring customer’s agent',
 }
 
 export function OwnershipHistory({ lead }: { lead: Lead }) {

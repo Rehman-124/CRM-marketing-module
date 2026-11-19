@@ -4,9 +4,10 @@ import { UserPlus, Inbox } from 'lucide-react'
 import { Badge, Button, Callout, Card, EmptyState, PageHeader, th, td, cn } from '@/components/ui'
 import { CompanyTag, SourceBadge } from '@/components/domain'
 import { AssignDialog } from '@/components/leads/LeadWidgets'
-import { useAppData } from '@/store/store'
+import { useCalmData } from '@/store/store'
 import { useScope } from '@/store/hooks'
 import { companyAgents } from '@/domain/engine'
+import { canAssign } from '@/domain/permissions'
 import { fmtDateTime, fmtRelative } from '@/lib/time'
 import type { Lead } from '@/domain/types'
 
@@ -17,7 +18,7 @@ const REASON: Record<string, string> = {
 }
 
 export default function UnassignedPage() {
-  const S = useAppData()
+  const S = useCalmData()
   const { companies, me } = useScope()
   const navigate = useNavigate()
   const [target, setTarget] = useState<Lead | null>(null)
@@ -29,7 +30,7 @@ export default function UnassignedPage() {
       <PageHeader
         title="Unassigned leads"
         description="Leads the engine could not assign, Leads released from Absent agents with nobody eligible, and Leads unassigned by a manager. They stay here until a manager acts — oldest first."
-        eyebrow={<span>P1-FR-002 · P3-FR-002 · MKT-BR-006</span>}
+        eyebrow={<span>P1-FR-002 · AC-P1-002-10/11</span>}
       />
       {rows.some((l) => l.companyId === 'trip2goglobal') && (
         <Callout tone="neutral" className="mb-4">Trip2GoGlobal is inactive and has no sales agents yet, so its Leads stay Unassigned.</Callout>
@@ -38,7 +39,7 @@ export default function UnassignedPage() {
         {rows.length === 0 ? (
           <EmptyState icon={Inbox} title="No Unassigned leads" description="Every Lead in your scope has an owner." />
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto" tabIndex={0}>
             <table className="w-full min-w-[820px]">
               <thead className="border-b border-slate-100 bg-slate-50/60"><tr><th className={th}>Lead</th><th className={th}>Company</th><th className={th}>Source</th><th className={th}>Why unassigned</th><th className={th}>Waiting</th><th className={cn(th, "relative")}><span className="sr-only">Actions</span></th></tr></thead>
               <tbody className="divide-y divide-slate-100">
@@ -55,7 +56,7 @@ export default function UnassignedPage() {
                       <td className={td}><SourceBadge source={l.source} /></td>
                       <td className={td}>{noAgents ? <Badge tone="neutral">Company has no agents</Badge> : <span className="text-[12.5px] text-slate-600">{REASON[lastKind] ?? 'Unassigned'}</span>}</td>
                       <td className={td}><span className="text-[12.5px] text-slate-500" title={fmtDateTime(l.createdAt)}>{fmtRelative(l.createdAt, S.clock.now)}</span></td>
-                      <td className={cn(td, 'text-right')}><Button size="sm" variant="primary" icon={UserPlus} disabled={noAgents} onClick={() => setTarget(l)}>Assign</Button></td>
+                      <td className={cn(td, 'text-right')}><Button size="sm" variant="primary" icon={UserPlus} disabled={noAgents || !canAssign(S, me, l.companyId)} title={!canAssign(S, me, l.companyId) ? 'Needs the Reassignment permission for this company' : undefined} onClick={() => setTarget(l)}>Assign</Button></td>
                     </tr>
                   )
                 })}

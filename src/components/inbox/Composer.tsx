@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Globe, Lock, MessageCircle, Send, Clock, Info } from 'lucide-react'
-import { cn, Segmented } from '../ui'
+import { cn, PendingTag, Segmented } from '../ui'
 import { toast } from '../ui/overlay'
 import type { Enquiry, User } from '@/domain/types'
 import { isCommentThread, replyOptions, textLimit } from '@/domain/messaging'
@@ -51,6 +51,7 @@ export function Composer({ e, me, now, live, connectionError }: { e: Enquiry; me
           <Segmented size="sm" value={kind} onChange={setKind} options={available.map((k) => ({ value: k, label: <span className="inline-flex items-center gap-1">{k === 'private-reply' ? <Lock className="size-3" /> : k === 'public-reply' ? <Globe className="size-3" /> : <MessageCircle className="size-3" />}{KIND_LABEL[k]}</span> }))} />
         </div>
       )}
+      <p className="mb-1.5 text-[11.5px] text-slate-500"><PendingTag title="FRD v1.4 does not cover replying from the Marketing Inbox. Kept as a product-owner decision (18 Oct 2026, confirmed 19 Nov 2026).">Product-owner decision · outside FRD v1.4</PendingTag></p>
       <p className={cn('mb-1.5 flex items-start gap-1.5 text-[12px]', opt.allowed ? 'text-slate-500' : 'text-amber-800')}>
         <Clock className="mt-0.5 size-3.5 shrink-0" />
         <span>

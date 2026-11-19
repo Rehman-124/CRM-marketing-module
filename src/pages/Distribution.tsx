@@ -1,35 +1,26 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { AlertTriangle, Eye, Inbox, Timer, UserX, Users2, History, Scale, Sparkles, Shuffle, CalendarDays } from 'lucide-react'
-import { Avatar, Badge, Callout, Card, CardHeader, EmptyState, PageHeader, PendingTag, Segmented, Select, Stat, th, td, cn } from '@/components/ui'
+import { AlertTriangle, Eye, Inbox, Timer, UserX, Users2, History, Scale, Sparkles, Shuffle } from 'lucide-react'
+import { Avatar, Badge, Callout, Card, CardHeader, EmptyState, PageHeader, PendingTag, Segmented, Stat, th, td, cn } from '@/components/ui'
 import { AgentStateBadge, CompanyTag, SlaChip } from '@/components/domain'
 import { OwnerCell } from '@/components/leads/LeadWidgets'
-import { useAppData } from '@/store/store'
+import { useCalmData } from '@/store/store'
 import { useScope } from '@/store/hooks'
-import { agentState, activeLeadCount, companyAgents, fairnessScore, userName } from '@/domain/engine'
-import { fmtDateTime, fmtDuration, fmtMonthKey, fmtRelative, monthKey, SLA_MS } from '@/lib/time'
+import { agentState, uncontactedCount, companyAgents, fairnessScore, userName } from '@/domain/engine'
+import { fmtDateTime, fmtDuration, fmtRelative, SLA_MS } from '@/lib/time'
 import type { AuditType, CompanyId } from '@/domain/types'
 
-const CHANGE_TYPES: AuditType[] = ['manual-assign', 'manual-unassign', 'manual-reassign', 'availability', 'absent', 'released-absent']
+const CHANGE_TYPES: AuditType[] = ['manual-assign', 'manual-unassign', 'manual-reassign', 'availability', 'absent', 'released-absent', 'referral']
 
 export default function DistributionPage() {
-  const S = useAppData()
+  const S = useCalmData()
   const { companies, me } = useScope()
   const navigate = useNavigate()
-  const current = monthKey(S.clock.now)
-  const [month, setMonth] = useState(current)
   const [changes, setChanges] = useState<'all' | 'assign' | 'availability'>('all')
   const [showAll, setShowAll] = useState(false)
   const scope: CompanyId[] = me.role === 'teamlead' ? companies.filter((c) => me.companyIds.includes(c)) : companies
 
-  const months = useMemo(() => {
-    const set = new Set(S.assignments.map((a) => monthKey(a.at)))
-    set.add(current)
-    return [...set].sort().reverse()
-  }, [S.assignments, current])
-
   const leads = S.leads.filter((l) => scope.includes(l.companyId))
-  const monthLeads = leads.filter((l) => monthKey(l.createdAt) === month)
   const unassigned = leads.filter((l) => !l.ownerId).sort((a, b) => a.createdAt - b.createdAt)
   const uncontacted = leads.filter((l) => l.ownerId && !l.firstContactAt && l.status !== 'lost' && l.status !== 'booked').sort((a, b) => a.createdAt - b.createdAt)
   const alerts = uncontacted.filter((l) => l.slaAlertAt).sort((a, b) => b.slaCountedMs - a.slaCountedMs)
@@ -44,69 +35,61 @@ export default function DistributionPage() {
       <PageHeader
         title="Distribution & SLA monitoring"
         description="How Leads are shared and which Leads need attention. This view only shows information — any change goes through the manual controls on the Lead."
-        eyebrow={<><Badge tone="neutral" icon={Eye}>Read-only view</Badge><span>P2-FR-003</span>{me.role === 'teamlead' && <Badge tone="brand">Your team only</Badge>}</>}
-        actions={
-          <div className="flex items-center gap-2">
-            <CalendarDays className="size-4 text-slate-400" />
-            <Select value={month} onChange={(e) => setMonth(e.target.value)} className="w-56" aria-label="Month">
-              {months.map((m) => <option key={m} value={m}>{fmtMonthKey(m)}{m === current ? ' (current)' : ''}</option>)}
-            </Select>
-          </div>
-        }
+        eyebrow={<><Badge tone="neutral" icon={Eye}>Read-only view</Badge><span>P2-FR-003 · AC-P2-003-1 … 7</span>{me.role === 'teamlead' && <Badge tone="brand">Your team only</Badge>}</>}
       />
 
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label={`Leads · ${fmtMonthKey(month)}`} value={monthLeads.length.toLocaleString()} icon={Users2} tone="brand" />
+        <Stat label="Leads in view" value={leads.length.toLocaleString()} icon={Users2} tone="brand" />
         <Stat label="Unassigned" value={unassigned.length} icon={UserX} tone={unassigned.length ? 'amber' : 'neutral'} onClick={() => document.getElementById('pending')?.scrollIntoView({ behavior: 'smooth' })} />
         <Stat label="Awaiting first contact" value={uncontacted.length} icon={Timer} onClick={() => document.getElementById('pending')?.scrollIntoView({ behavior: 'smooth' })} />
         <Stat label="Active SLA alerts" value={alerts.length} icon={AlertTriangle} tone={alerts.length ? 'red' : 'neutral'} onClick={() => document.getElementById('alerts')?.scrollIntoView({ behavior: 'smooth' })} />
       </div>
 
       <Card className="mb-5">
-        <CardHeader icon={Scale} title={`Allocation & fairness · ${fmtMonthKey(month)}`}
-          description="Score = real monthly count + starting offset. The lowest-score eligible agent receives the next automatic Lead. Counts reset automatically on the 1st."
-          actions={month !== current ? <Badge tone="neutral">Agent state shown as of now</Badge> : undefined} />
+        <CardHeader icon={Scale} title="Allocation & fair-distribution score"
+          description="Leads allocated per agent, each agent’s current score and status. The next automatic Lead goes to the lowest-score group (Absent excluded); scores carry across days and do not reset at midnight." />
         {teamCompanies.map((c) => {
           const agents = companyAgents(S, c)
           const company = S.companies.find((x) => x.id === c)!
-          const scores = agents.map((a) => ({ a, ...fairnessScore(S, a.id, month) }))
+          const scores = agents.map((a) => ({ a, ...fairnessScore(S, a.id), allocated: S.assignments.filter((r) => r.agentId === a.id && !r.voided).length }))
           const max = Math.max(1, ...scores.map((s) => s.score))
+          const min = Math.min(...scores.filter((s) => agentState(S, s.a, S.clock.now) !== 'absent').map((s) => s.score))
           const lastTie = S.tieRotation[c]
-          const monthTotal = scores.reduce((x, s) => x + s.count, 0)
+          const total = scores.reduce((x, s) => x + s.allocated, 0)
           return (
             <div key={c} className="border-b border-slate-100 last:border-0">
               <div className="flex flex-wrap items-center gap-3 bg-slate-50/60 px-5 py-2.5">
                 <CompanyTag id={c} />
                 {!company.active && <Badge tone="neutral">Inactive</Badge>}
-                <span className="text-[12px] text-slate-500">{agents.length} agents · {monthTotal} counted assignments</span>
+                <span className="text-[12px] text-slate-500">{agents.length} agents · {total} Leads allocated</span>
                 {lastTie && <span className="ml-auto inline-flex items-center gap-1 text-[11.5px] text-slate-500"><Shuffle className="size-3" />Last tie-break: {userName(S, lastTie)}</span>}
               </div>
               {agents.length === 0 ? (
                 <p className="px-5 py-4 text-[13px] text-slate-500">No sales agents yet — Leads stay Unassigned.</p>
               ) : (
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto" tabIndex={0}>
                   <table className="w-full min-w-[820px]">
-                    <thead><tr className="border-b border-slate-100"><th className={th}>Agent</th><th className={th}>State</th><th className={cn(th, 'text-right')}>Real count</th><th className={cn(th, 'text-right')}>Offset</th><th className={th}>Fairness score</th><th className={cn(th, 'text-right')}>Active / capacity</th></tr></thead>
+                    <thead><tr className="border-b border-slate-100"><th className={th}>Agent</th><th className={th}>Status</th><th className={cn(th, 'text-right')}>Leads allocated</th><th className={th}>Current score</th><th className={cn(th, 'text-right')}>Awaiting first contact</th></tr></thead>
                     <tbody className="divide-y divide-slate-100">
-                      {scores.sort((x, y) => x.score - y.score).map(({ a, count, offset, score }) => {
-                        const active = activeLeadCount(S, a.id)
+                      {scores.sort((x, y) => x.score - y.score).map(({ a, count, offset, score, allocated }) => {
+                        const waiting = uncontactedCount(S, a.id)
                         const isNew = offset > 0
+                        const st = agentState(S, a, S.clock.now)
                         return (
                           <tr key={a.id}>
-                            <td className={td}><span className="flex items-center gap-2.5"><Avatar name={a.name} size="sm" /><span className="font-medium text-slate-800">{a.name}</span>{isNew && <Badge tone="violet" icon={Sparkles}>New · offset</Badge>}</span></td>
-                            <td className={td}><AgentStateBadge state={agentState(S, a, S.clock.now)} /></td>
-                            <td className={cn(td, 'text-right font-medium tabular-nums')}>{count}</td>
-                            <td className={cn(td, 'text-right tabular-nums text-slate-500')}>{offset ? `+${offset}` : '0'}</td>
+                            <td className={td}><span className="flex items-center gap-2.5"><Avatar name={a.name} size="sm" /><span className="font-medium text-slate-800">{a.name}</span>{isNew && <Badge tone="violet" icon={Sparkles} title={`Started at ${offset} (placeholder: team average when added)`}>Starting score {offset}</Badge>}{st !== 'absent' && score === min && <Badge tone="brand">Lowest-score group</Badge>}</span></td>
+                            <td className={td}><AgentStateBadge state={st} /></td>
+                            <td className={cn(td, 'text-right font-medium tabular-nums')}>{allocated}</td>
                             <td className={cn(td, 'w-64')}>
                               <div className="flex items-center gap-2.5">
                                 <div className="flex h-2 flex-1 gap-[2px] overflow-hidden rounded-full bg-slate-100">
-                                  <div className="h-full rounded-l-full bg-brand-500" style={{ width: `${(count / max) * 100}%` }} title={`Real count ${count}`} />
-                                  {offset > 0 && <div className="h-full bg-violet-300" style={{ width: `${(offset / max) * 100}%` }} title={`Offset ${offset}`} />}
+                                  <div className="h-full rounded-l-full bg-brand-500" style={{ width: `${(count / max) * 100}%` }} title={`${count} counted assignments`} />
+                                  {offset > 0 && <div className="h-full bg-violet-300" style={{ width: `${(offset / max) * 100}%` }} title={`Starting score ${offset}`} />}
                                 </div>
                                 <span className="w-8 text-right text-[13px] font-semibold text-slate-800 tabular-nums">{score}</span>
                               </div>
                             </td>
-                            <td className={cn(td, 'text-right tabular-nums')}><span className={cn(active >= S.params.capacity ? 'font-semibold text-violet-700' : 'text-slate-600')}>{active} / {S.params.capacity}</span></td>
+                            <td className={cn(td, 'text-right tabular-nums text-slate-600')}>{waiting}</td>
                           </tr>
                         )
                       })}
@@ -118,9 +101,10 @@ export default function DistributionPage() {
           )
         })}
         <div className="flex flex-wrap items-center gap-4 border-t border-slate-100 px-5 py-2.5 text-[11.5px] text-slate-500">
-          <span className="inline-flex items-center gap-1.5"><span className="h-2 w-4 rounded-full bg-brand-500" />Real count</span>
-          <span className="inline-flex items-center gap-1.5"><span className="h-2 w-4 rounded-full bg-violet-300" />Starting offset (new agent)</span>
-          <span>Capacity value <b className="text-slate-700">{S.params.capacity}</b> <PendingTag>Placeholder</PendingTag></span>
+          <span className="inline-flex items-center gap-1.5"><span className="h-2 w-4 rounded-full bg-brand-500" />Counted assignments</span>
+          <span className="inline-flex items-center gap-1.5"><span className="h-2 w-4 rounded-full bg-violet-300" />Starting score (agent added later)</span>
+          <span>Score calculation, starting score and any reset <PendingTag>To be confirmed</PendingTag></span>
+          <span>Manual assignments count: <b className="text-slate-700">{S.params.manualCountsTowardFairness ? 'yes' : 'no'}</b> <PendingTag>Pending</PendingTag></span>
         </div>
       </Card>
 

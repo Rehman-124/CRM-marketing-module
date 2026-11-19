@@ -3,21 +3,24 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   Inbox, Users2, UserPlus, ListChecks, UserX, Gauge, CalendarClock, BarChart3, PlugZap, ScrollText, ShieldCheck,
   ClipboardCheck, Bell, Menu, ChevronsUpDown, Check, Building2, FlaskConical, Moon, Sun, X, AlertTriangle, CircleCheck, Plane,
+  LayoutDashboard, Briefcase, MessageCircle, Receipt, BookCheck, FileSignature, FolderKanban, LineChart, Settings2, Coins,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Avatar, Badge, Button, cn, SimTag } from '../ui'
 import { Popover } from '../ui/overlay'
-import { useAppData, useMe, useStore, useRun } from '@/store/store'
+import { useAppData, useCalmData, useMe, useStore, useRun } from '@/store/store'
 import { useAction, useScope } from '@/store/hooks'
 import {
-  canAdminister, canCreateManualLead, canViewDistribution, canViewInbox, canViewReports, canViewTeam, canViewUnassigned,
-  receivesNotification, ROLE_LABEL, visibleCompanies, isViewOnlyCompany,
+  canAdminister, canCreateManualLead, canViewAudit, canViewBookings, canViewCases, canViewCompanyInbox, canViewDistribution, canViewInbox, canViewIntegrations,
+  canViewOpportunity, canViewReports, canViewSalesReports, canViewTeam, canViewUnassigned, receivesNotification, ROLE_LABEL, visibleCompanies, isViewOnlyCompany,
 } from '@/domain/permissions'
+import { isTaskOverdue } from '@/domain/sales'
+import { findLead, findOpp } from '@/domain/lookup'
 import { companyName, isAbsent, setAvailability } from '@/domain/engine'
 import { fmtDow, fmtDateShort, fmtTimeSec, isShiftTime, fmtRelative } from '@/lib/time'
 import { COMPANY_COLORS } from '@/domain/constants'
 import { DemoConsole } from './DemoConsole'
-import type { AppData, User } from '@/domain/types'
+import type { AppData, NotificationType, Role, User } from '@/domain/types'
 
 interface NavItem { to: string; label: string; icon: LucideIcon; show: (S: AppData, u: User) => boolean; badge?: (S: AppData, u: User) => { n: number; tone: 'red' | 'brand' | 'amber' } | null }
 
@@ -25,6 +28,9 @@ function scopedLeads(S: AppData, u: User) {
   const vis = visibleCompanies(S, u)
   return S.leads.filter((l) => vis.includes(l.companyId) && (u.role !== 'teamlead' || u.companyIds.includes(l.companyId)))
 }
+
+const isMgmt = (u: User) => u.role === 'admin' || u.role === 'manager'
+const myOppIds = (S: AppData, u: User) => new Set(S.opportunities.filter((o) => findLead(S, o.leadId)?.ownerId === u.id).map((o) => o.id))
 
 const NAV: { section: string; items: NavItem[] }[] = [
   {
@@ -34,17 +40,38 @@ const NAV: { section: string; items: NavItem[] }[] = [
         to: '/inbox', label: 'Marketing Inbox', icon: Inbox, show: (_S, u) => canViewInbox(u),
         badge: (S, u) => { const vis = visibleCompanies(S, u); const n = S.enquiries.filter((e) => e.status === 'open' && !e.read && vis.includes(e.companyId)).length; return n ? { n, tone: 'brand' } : null },
       },
-      { to: '/leads', label: 'Leads', icon: Users2, show: (_S, u) => u.role !== 'agent' },
+      { to: '/leads', label: 'Leads', icon: Users2, show: (_S, u) => ['admin', 'manager', 'marketing', 'teamlead'].includes(u.role) },
       { to: '/leads/new', label: 'New manual lead', icon: UserPlus, show: (S, u) => canCreateManualLead(S, u) },
+      { to: '/reports', label: 'Marketing reports', icon: BarChart3, show: (_S, u) => canViewReports(u) },
     ],
   },
   {
     section: 'Sales',
     items: [
       {
-        to: '/my-leads', label: 'My leads', icon: ListChecks, show: (_S, u) => u.role === 'agent',
+        to: '/sales', label: 'My workspace', icon: LayoutDashboard, show: (_S, u) => u.role === 'agent',
+        badge: (S, u) => { const ids = myOppIds(S, u); const n = S.tasks.filter((t) => ids.has(t.oppId) && isTaskOverdue(t, S.clock.now)).length; return n ? { n, tone: 'red' } : null },
+      },
+      {
+        to: '/sales/opportunities', label: 'Opportunities', icon: Briefcase, show: (_S, u) => u.role === 'agent' || isMgmt(u),
+        badge: (S, u) => { if (u.role !== 'agent') return null; const n = S.opportunities.filter((o) => o.contactPrompt && findLead(S, o.leadId)?.ownerId === u.id).length; return n ? { n, tone: 'amber' } : null },
+      },
+      {
+        to: '/my-leads', label: 'End-of-shift update', icon: ListChecks, show: (_S, u) => u.role === 'agent',
         badge: (S, u) => { const n = S.leads.filter((l) => l.ownerId === u.id && !l.firstContactAt && l.status !== 'lost' && l.status !== 'booked').length; return n ? { n, tone: 'amber' } : null },
       },
+      { to: '/sales/inbox', label: 'Conversations', icon: MessageCircle, show: (_S, u) => u.role === 'agent' || canViewCompanyInbox(u) },
+      {
+        to: '/sales/accounts', label: 'Payment verification', icon: Coins, show: (_S, u) => u.role === 'accounts',
+        badge: (S, u) => { const vis = visibleCompanies(S, u); const n = S.payments.filter((p) => p.status === 'awaiting' && vis.includes(findOpp(S, p.oppId)!.companyId)).length + S.refunds.filter((r) => r.status === 'requested').length; return n ? { n, tone: 'amber' } : null },
+      },
+      { to: '/sales/bookings', label: 'Bookings', icon: BookCheck, show: (_S, u) => canViewBookings(u) },
+      { to: '/sales/invoices', label: 'Invoices', icon: FileSignature, show: (_S, u) => u.role === 'agent' || isMgmt(u) },
+      {
+        to: '/sales/cases', label: 'Service cases', icon: FolderKanban, show: (_S, u) => canViewCases(u),
+        badge: (S, u) => { if (u.role !== 'processing') return null; const n = S.cases.filter((c) => !c.outcome && (c.options.length === 0 || (c.selection && !c.appointment))).length; return n ? { n, tone: 'brand' } : null },
+      },
+      { to: '/sales/reports', label: 'Sales performance', icon: LineChart, show: (_S, u) => canViewSalesReports(u) },
     ],
   },
   {
@@ -55,25 +82,22 @@ const NAV: { section: string; items: NavItem[] }[] = [
         badge: (S, u) => { const n = scopedLeads(S, u).filter((l) => !l.ownerId).length; return n ? { n, tone: 'amber' } : null },
       },
       {
-        to: '/distribution', label: 'Distribution & SLA', icon: Gauge, show: (_S, u) => canViewDistribution(u),
+        to: '/distribution', label: 'Distribution & SLA', icon: Gauge, show: (S, u) => canViewDistribution(S, u),
         badge: (S, u) => { const n = scopedLeads(S, u).filter((l) => l.slaAlertAt && !l.firstContactAt && l.ownerId).length; return n ? { n, tone: 'red' } : null },
       },
-      { to: '/team', label: 'Team & shift', icon: CalendarClock, show: (_S, u) => canViewTeam(u) },
+      { to: '/team', label: 'Team & shift', icon: CalendarClock, show: (S, u) => canViewTeam(S, u) },
     ],
-  },
-  {
-    section: 'Insights',
-    items: [{ to: '/reports', label: 'Reports', icon: BarChart3, show: (_S, u) => canViewReports(u) }],
   },
   {
     section: 'Administration',
     items: [
       {
-        to: '/integrations', label: 'Integrations', icon: PlugZap, show: (_S, u) => canAdminister(u),
+        to: '/integrations', label: 'Integrations', icon: PlugZap, show: (_S, u) => canViewIntegrations(u),
         badge: (S) => { const n = S.connections.filter((c) => c.state === 'error').length; return n ? { n, tone: 'red' } : null },
       },
-      { to: '/audit', label: 'Audit log', icon: ScrollText, show: (_S, u) => canAdminister(u) },
-      { to: '/access', label: 'Access & roles', icon: ShieldCheck, show: (_S, u) => canAdminister(u) },
+      { to: '/audit', label: 'Audit log', icon: ScrollText, show: (_S, u) => canViewAudit(u) },
+      { to: '/access', label: 'Access & permissions', icon: ShieldCheck, show: (_S, u) => canAdminister(u) },
+      { to: '/sales/settings', label: 'Sales settings', icon: Settings2, show: (_S, u) => canAdminister(u) },
     ],
   },
   {
@@ -83,7 +107,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
 ]
 
 function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
-  const S = useAppData()
+  const S = useCalmData()
   const me = useMe()
   return (
     <div className="flex h-full flex-col bg-ink-950 text-side-text">
@@ -93,7 +117,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         </div>
         <div className="leading-tight">
           <p className="text-[14px] font-semibold tracking-tight text-white">Trip2Go CRM</p>
-          <p className="text-[11px] font-medium text-side-muted">Marketing module</p>
+          <p className="text-[11px] font-medium text-side-muted">Marketing & Sales · FRD v1.4</p>
         </div>
       </div>
       <nav className="scroll-thin flex-1 space-y-5 overflow-y-auto px-3 py-3">
@@ -110,7 +134,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                     <li key={item.to}>
                       <NavLink
                         to={item.to}
-                        end={item.to === '/leads'}
+                        end={item.to === '/leads' || item.to === '/sales'}
                         onClick={onNavigate}
                         className={({ isActive }) => cn(
                           'group flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors',
@@ -123,7 +147,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                             <span className="flex-1 truncate">{item.label}</span>
                             {b && (
                               <span className={cn('min-w-5 rounded-full px-1.5 text-center text-[10.5px] leading-[18px] font-semibold tabular-nums',
-                                b.tone === 'red' ? 'bg-rose-500 text-white' : b.tone === 'amber' ? 'bg-amber-400/90 text-amber-950' : 'bg-brand-500 text-white')}>{b.n}</span>
+                                b.tone === 'red' ? 'bg-rose-600 text-white' : b.tone === 'amber' ? 'bg-amber-400/90 text-amber-950' : 'bg-brand-600 text-white')}>{b.n}</span>
                             )}
                           </>
                         )}
@@ -161,7 +185,7 @@ function CompanySwitcher() {
       </div>
     ) : null
   }
-  const label = filter === 'all' ? (me.role === 'admin' ? 'All six companies' : 'All my companies') : companyName(S, filter)
+  const label = filter === 'all' ? (visible.length === 6 ? 'All six companies' : 'All my companies') : companyName(S, filter)
   return (
     <Popover
       align="left"
@@ -183,7 +207,7 @@ function CompanySwitcher() {
             return (
               <button key={c} onClick={() => { setSession({ companyFilter: c }); close() }} className={cn('flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] hover:bg-slate-50', active && 'bg-slate-50')}>
                 {company ? <span className="size-2 rounded-[3px]" style={{ background: COMPANY_COLORS[company.id] }} /> : <Building2 className="size-3.5 text-slate-400" />}
-                <span className="flex-1 font-medium text-slate-700">{company ? company.name : me.role === 'admin' ? 'All six companies' : 'All my companies'}</span>
+                <span className="flex-1 font-medium text-slate-700">{company ? company.name : visible.length === 6 ? 'All six companies' : 'All my companies'}</span>
                 {company && !company.active && <Badge tone="neutral">Inactive</Badge>}
                 {company && isViewOnlyCompany(me, company.id) && <Badge tone="neutral">View only</Badge>}
                 {active && <Check className="size-4 text-brand-600" />}
@@ -243,15 +267,24 @@ function AvailabilityToggle() {
 }
 
 function Notifications() {
-  const S = useAppData()
+  const S = useCalmData(3000)
   const me = useMe()
   const run = useRun()
   const navigate = useNavigate()
   const items = S.notifications.filter((n) => receivesNotification(S, me, n)).slice(-40).reverse()
   const unread = items.filter((n) => !n.read).length
-  if (me.role !== 'admin' && me.role !== 'teamlead') return null
-  const icon = { sla: AlertTriangle, 'no-eligible': UserX, integration: PlugZap, 'shift-start': CalendarClock }
-  const color = { sla: 'text-rose-500 bg-rose-50', 'no-eligible': 'text-amber-600 bg-amber-50', integration: 'text-rose-500 bg-rose-50', 'shift-start': 'text-brand-600 bg-brand-50' }
+  if (me.role === 'marketing') return null
+  const icon: Record<NotificationType, typeof Bell> = { sla: AlertTriangle, 'no-eligible': UserX, integration: PlugZap, 'shift-start': CalendarClock, sales: Receipt }
+  const color: Record<NotificationType, string> = { sla: 'text-rose-500 bg-rose-50', 'no-eligible': 'text-amber-600 bg-amber-50', integration: 'text-rose-500 bg-rose-50', 'shift-start': 'text-brand-600 bg-brand-50', sales: 'text-teal-600 bg-teal-50' }
+  const go = (n: (typeof items)[number]) => {
+    const opp = n.oppId ? findOpp(S, n.oppId) : undefined
+    if (me.role === 'processing' && n.caseId) return navigate(`/sales/cases/${n.caseId}`)
+    if (me.role === 'accounts') return navigate('/sales/accounts')
+    if (opp && canViewOpportunity(S, me, opp)) return navigate(`/sales/opportunities/${opp.id}`)
+    if (n.leadId && me.role !== 'helpline') return navigate(`/leads/${n.leadId}`)
+    if (n.type === 'integration') return navigate('/integrations')
+    if (n.type === 'shift-start') return navigate('/team')
+  }
   return (
     <Popover
       width="w-[380px]"
@@ -278,7 +311,7 @@ function Notifications() {
               return (
                 <button
                   key={n.id}
-                  onClick={() => { run((d) => { const x = d.notifications.find((y) => y.id === n.id); if (x) x.read = true }); close(); if (n.leadId) navigate(`/leads/${n.leadId}`); else if (n.type === 'integration') navigate('/integrations'); else if (n.type === 'shift-start') navigate('/team') }}
+                  onClick={() => { run((d) => { const x = d.notifications.find((y) => y.id === n.id); if (x) x.read = true }); close(); go(n) }}
                   className={cn('flex w-full gap-3 border-b border-slate-50 px-4 py-3 text-left transition hover:bg-slate-50', !n.read && 'bg-brand-50/40')}
                 >
                   <span className={cn('mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg', color[n.type])}><Icon className="size-3.5" strokeWidth={2.2} /></span>
@@ -306,7 +339,7 @@ function UserSwitcher() {
   const me = useMe()
   const setSession = useStore((s) => s.setSession)
   const navigate = useNavigate()
-  const groups: User['role'][] = ['admin', 'marketing', 'teamlead', 'agent']
+  const groups: Role[] = ['admin', 'manager', 'marketing', 'teamlead', 'agent', 'accounts', 'processing', 'helpline']
   return (
     <Popover
       width="w-80"
@@ -340,7 +373,7 @@ function UserSwitcher() {
                     <Avatar name={u.name} size="sm" />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[13px] font-medium text-slate-800">{u.name}</span>
-                      <span className="block truncate text-[11px] text-slate-500">{u.role === 'admin' ? 'All companies' : u.companyIds.map((c) => companyName(S, c)).join(', ')}</span>
+                      <span className="block truncate text-[11px] text-slate-500">{u.companyIds.length === S.companies.length ? 'All companies' : u.companyIds.map((c) => companyName(S, c)).join(', ')}{u.permissions.length ? ' · ' + u.permissions.map((p) => (p === 'reassignment' ? 'Reassignment' : 'Margin override')).join(', ') : ''}</span>
                     </span>
                     {u.id === me.id && <Check className="size-4 text-brand-600" />}
                   </button>

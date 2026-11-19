@@ -52,3 +52,6 @@
 .scroll-thin::-webkit-scrollbar { width: 8px; height: 8px }
 .scroll-thin::-webkit-scrollbar-thumb { background: rgb(148 163 184 / .35); border-radius: 8px }
 .scroll-thin::-webkit-scrollbar-track { background: transparent }
+
+/* Keyboard users can scroll wide tables; show where focus is. */
+.overflow-x-auto[tabindex]:focus-visible { outline: 2px solid var(--color-brand-500); outline-offset: 2px; border-radius: 6px; }

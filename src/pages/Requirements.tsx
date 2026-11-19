@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ClipboardCheck, ChevronDown, ChevronRight, ArrowUpRight, CircleDashed, SlidersHorizontal, GitCompareArrows, HelpCircle, UserCheck } from 'lucide-react'
-import { Badge, Callout, Card, CardHeader, Input, PageHeader, PendingTag, Select, Switch, Textarea, td, cn } from '@/components/ui'
-import { useAppData, useRun } from '@/store/store'
+import { Badge, Callout, Card, CardHeader, PageHeader, PendingTag, Select, Switch, Textarea, td, cn } from '@/components/ui'
+import { useCalmData, useRun } from '@/store/store'
 import { FRS, INTERPRETATIONS, OPEN_DECISIONS, OWNER_DECISIONS } from '@/domain/spec'
-import { FIELD_LABEL, STANDARD_FIELDS } from '@/domain/constants'
+import { ALL_QUAL_FIELDS, FIELD_LABEL, QUAL_FIELD_LABEL, STANDARD_FIELDS } from '@/domain/constants'
 import type { PendingDecisionParams } from '@/domain/types'
 
-const KEY = 'trip2go-mkt-tracker'
+const KEY = 'trip2go-crm-tracker-v14'
 type Tracker = { design: Record<string, string>; acs: Record<string, boolean>; decisions: Record<string, boolean> }
 function load(): Tracker {
   try { const r = localStorage.getItem(KEY); if (r) return JSON.parse(r) } catch { /* ignore */ }
@@ -16,7 +16,7 @@ function load(): Tracker {
 const DESIGN_STATUSES = ['Ready for Design', 'In Design', 'Design Review', 'Design Approved', 'In Development', 'In QA', 'Done']
 
 export default function RequirementsPage() {
-  const S = useAppData()
+  const S = useCalmData()
   const run = useRun()
   const [tracker, setTracker] = useState<Tracker>(load)
   const [open, setOpen] = useState<Record<string, boolean>>({ 'P1-FR-001': true })
@@ -28,20 +28,21 @@ export default function RequirementsPage() {
 
   return (
     <div>
-      <PageHeader title="Requirements & decisions" description="Traceability to the Marketing FRD (10 Oct 2026): track each requirement through design, tick acceptance criteria as they pass testing, and see every open decision and the placeholder the prototype uses for it." eyebrow={<Badge tone="brand" icon={ClipboardCheck}>Prototype</Badge>} />
+      <PageHeader title="Requirements & decisions" description="Traceability to FRD v1.4 (17 Nov 2026) — Part 1 Marketing and Part 2 Sales: track each requirement through design, tick acceptance criteria as they pass testing, and see every open decision and the placeholder the prototype uses for it." eyebrow={<Badge tone="brand" icon={ClipboardCheck}>Prototype</Badge>} />
 
-      <Callout tone="warning" icon={GitCompareArrows} className="mb-5" title="Distribution rule conflict with TO-BE v0.2 — open decision">
-        This prototype implements the FRD rule: eligibility first (Absent → Unavailable → active-lead capacity), then the lowest fairness score among the agents left. TO-BE v0.2 §§6–7 describes strict lowest-score-first (assigning inside the lowest group even if all are Unavailable), with no capacity limit, monthly cycle or new-agent baseline. The two need aligning.
+      <Callout tone="info" icon={GitCompareArrows} className="mb-5" title="Updated for FRD v1.4">
+        Distribution now follows the v1.4 rule (exclude Absent → lowest-score group → Available preferred during shift → still inside the group if all are Unavailable). Active-lead capacity, the monthly reset and month offsets were removed because v1.4 does not contain them. P1-FR-004 (SLA) is now P1-FR-003, and integrations moved from P3-FR-003 to P3-FR-002.
       </Callout>
 
       <Card className="mb-5">
-        <CardHeader title="FR tracker" description={`10 functional requirements · ${passed} of ${totalAcs} acceptance criteria ticked`} actions={<div className="h-2 w-40 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-emerald-500" style={{ width: `${(passed / totalAcs) * 100}%` }} /></div>} />
+        <CardHeader title="FR tracker" description={`${FRS.length} functional requirements (8 Marketing, 8 Sales) · ${passed} of ${totalAcs} acceptance criteria ticked`} actions={<div className="h-2 w-40 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-emerald-500" style={{ width: `${(passed / totalAcs) * 100}%` }} /></div>} />
         <div className="divide-y divide-slate-100">
-          {FRS.map((fr) => {
+          {FRS.map((fr, i) => {
             const done = fr.acs.filter((a) => tracker.acs[a.id]).length
             const isOpen = open[fr.id]
             return (
               <div key={fr.id}>
+                {(i === 0 || FRS[i - 1].part !== fr.part) && <p className="bg-slate-50 px-5 py-2 text-[11px] font-semibold tracking-wide text-slate-500 uppercase">Part {fr.part === 'Marketing' ? '1 — Marketing (TO-BE v0.2)' : '2 — Sales (TO-BE v0.1)'}</p>}
                 <div className="flex flex-wrap items-center gap-3 px-5 py-3">
                   <button onClick={() => setOpen({ ...open, [fr.id]: !isOpen })} className="flex min-w-0 flex-1 items-center gap-3 text-left">
                     {isOpen ? <ChevronDown className="size-4 shrink-0 text-slate-400" /> : <ChevronRight className="size-4 shrink-0 text-slate-400" />}
@@ -50,6 +51,7 @@ export default function RequirementsPage() {
                   </button>
                   <Badge tone="neutral">Phase {fr.phase}</Badge>
                   <Badge tone={fr.priority === 'Must Have' ? 'red' : 'amber'}>{fr.priority}</Badge>
+                  {fr.status === 'Pending technical validation' && <PendingTag title="FRD status: Pending technical validation. The prototype simulates this behaviour and does not claim a live integration.">Pending technical validation</PendingTag>}
                   <span className={cn('w-14 text-right text-[12px] tabular-nums', done === fr.acs.length ? 'font-semibold text-emerald-700' : 'text-slate-500')}>{done}/{fr.acs.length} AC</span>
                   <Select value={tracker.design[fr.id] ?? 'Ready for Design'} onChange={(e) => update({ ...tracker, design: { ...tracker.design, [fr.id]: e.target.value } })} className="h-8 w-40 text-[12.5px]" aria-label="Design status">
                     {DESIGN_STATUSES.map((s) => <option key={s}>{s}</option>)}
@@ -79,7 +81,7 @@ export default function RequirementsPage() {
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_440px]">
         <Card>
-          <CardHeader icon={CircleDashed} title="Open decisions & technical dependencies" description="Tick a decision once it is resolved. Until then the prototype uses the placeholder shown." />
+          <CardHeader icon={CircleDashed} title="“To be confirmed” items & technical dependencies" description="Every item v1.4 marks “To be confirmed”. Tick one once it is resolved. Until then the prototype uses the placeholder shown." />
           <div className="divide-y divide-slate-100">
             {OPEN_DECISIONS.map((g) => (
               <div key={g.group} className="px-5 py-4">
@@ -107,15 +109,18 @@ export default function RequirementsPage() {
             <CardHeader icon={SlidersHorizontal} title="Demo parameters" description="Stand-ins for open decisions so each option can be shown. None is an approved business rule." actions={<PendingTag />} />
             <div className="divide-y divide-slate-100">
               {([
-                ['capacityAppliesOffTime', 'Capacity applies to off-time allocation'],
-                ['manualCountsTowardFairness', 'Manual assignments count toward fairness'],
+                ['manualCountsTowardFairness', 'Manual assignments count toward the score'],
+                ['referralCountsTowardFairness', 'Referral assignments count toward the score'],
                 ['slaRestartsOnReassign', 'SLA timer restarts for the new owner'],
                 ['requireReassignReason', 'Reassignment needs a reason'],
                 ['allowBackwardStatus', 'Agents can move a Lead backward'],
-                ['allowReopenLost', 'Agents can reopen a Lost Lead'],
-                ['teamLeadCanAssign', 'Team Leads can assign/reassign (company policy)'],
+                ['allowReopenLost', 'Agents can reopen a Lost Lead / opportunity'],
+                ['teamLeadMonitoring', 'Team Leads see monitoring for their own team (where authorised)'],
                 ['teamLeadReceivesSla', 'Team Leads receive SLA alerts (where authorised)'],
                 ['marketingCanCreateManualLeads', 'Marketing employees are “authorised users” for manual entry'],
+                ['managerInboxReplies', 'Managers and Admins may reply in agent conversations'],
+                ['overrideReasonRequired', 'A margin override needs a reason'],
+                ['rejectionReasonRequired', 'A payment rejection needs a reason'],
               ] as const).map(([k, label]) => (
                 <div key={k} className="flex items-center justify-between gap-4 px-5 py-2.5">
                   <span className="text-[13px] text-slate-700">{label}</span>
@@ -135,15 +140,20 @@ export default function RequirementsPage() {
                 <p className="mb-2 text-[13px] text-slate-700">Lost reasons (one per line)</p>
                 <Textarea aria-label="Lost reasons, one per line" value={p.lossReasons.join('\n')} onChange={(e) => setParam('lossReasons', e.target.value.split('\n').map((s) => s.trimStart()).filter((s, i, a) => s || i === a.length - 1))} className="min-h-32 text-[12.5px]" />
               </div>
-              <div className="flex items-center justify-between gap-4 px-5 py-3">
-                <span className="text-[13px] text-slate-700">Active-lead capacity</span>
-                <Input aria-label="Active-lead capacity" type="number" min={1} max={50} value={p.capacity} onChange={(e) => { const n = Number(e.target.value); if (Number.isInteger(n) && n >= 1 && n <= 50) setParam('capacity', n) }} className="h-8 w-20" />
+              <div className="px-5 py-3">
+                <p className="mb-2 text-[13px] text-slate-700">Fields required before generating a Client Information Draft <span className="text-[11.5px] text-slate-500">(placeholder field list)</span></p>
+                <div className="flex flex-wrap gap-1.5">
+                  {ALL_QUAL_FIELDS.map((f) => {
+                    const on = p.draftRequiredFields.includes(f.key)
+                    return <button key={f.key} onClick={() => setParam('draftRequiredFields', on ? p.draftRequiredFields.filter((x) => x !== f.key) : [...p.draftRequiredFields, f.key])} className={cn('rounded-md px-2 py-1 text-[12px] font-medium ring-1 ring-inset', on ? 'bg-brand-50 text-brand-700 ring-brand-200' : 'bg-white text-slate-500 ring-slate-200 hover:bg-slate-50')}>{QUAL_FIELD_LABEL[f.key]}</button>
+                  })}
+                </div>
               </div>
             </div>
           </Card>
 
           <Card>
-            <CardHeader icon={UserCheck} title="Product-owner decisions outside the FRD" description="Taken for the inbox reply feature, which the FRD does not cover." />
+            <CardHeader icon={UserCheck} title="Product-owner decisions" description="Decisions taken where v1.4 is open or silent. They are not part of the FRD." />
             <table className="w-full">
               <tbody className="divide-y divide-slate-100">
                 {OWNER_DECISIONS.map((d) => (

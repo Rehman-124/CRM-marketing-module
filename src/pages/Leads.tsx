@@ -4,7 +4,7 @@ import { Search, Users2, UserPlus, ChevronLeft, ChevronRight, FileX } from 'luci
 import { Badge, Button, Card, EmptyState, Input, PageHeader, Select, th, td, cn } from '@/components/ui'
 import { CompanyTag, SlaChip, SourceBadge, StatusPill } from '@/components/domain'
 import { OwnerCell } from '@/components/leads/LeadWidgets'
-import { useAppData } from '@/store/store'
+import { useCalmData } from '@/store/store'
 import { useScope } from '@/store/hooks'
 import { canCreateManualLead } from '@/domain/permissions'
 import { ALL_SOURCES, ALL_STATUSES, SOURCE_LABEL, STATUS_LABEL } from '@/domain/constants'
@@ -14,7 +14,7 @@ import type { FunnelStatus, LeadSource } from '@/domain/types'
 const PAGE = 25
 
 export default function LeadsPage() {
-  const S = useAppData()
+  const S = useCalmData()
   const { companies, me } = useScope()
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
@@ -84,7 +84,7 @@ export default function LeadsPage() {
         {slice.length === 0 ? (
           <EmptyState icon={Users2} title="No leads match" description="Try clearing a filter or switching company." />
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto" tabIndex={0}>
             <table className="w-full min-w-[1020px]">
               <thead className="border-b border-slate-100 bg-slate-50/60">
                 <tr>

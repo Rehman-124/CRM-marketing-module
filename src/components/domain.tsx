@@ -1,4 +1,4 @@
-import { FileText, Globe, MessageCircle, MessagesSquare, Phone, Mail, Timer, PauseCircle, Moon, CheckCircle2, AlertTriangle, UserX, Lock } from 'lucide-react'
+import { FileText, Globe, MessageCircle, MessagesSquare, Phone, Mail, Timer, PauseCircle, Moon, CheckCircle2, AlertTriangle, UserX, Lock, Share2 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Badge, cn, type Tone } from './ui'
 import { COMPANY_COLORS, CONNECTION_STATE_LABEL, SOURCE_SHORT, SOURCE_LABEL, STATUS_LABEL } from '@/domain/constants'
@@ -17,7 +17,6 @@ const AGENT_STATE: Record<AgentState, { label: string; tone: Tone }> = {
   available: { label: 'Available', tone: 'green' },
   unavailable: { label: 'Unavailable', tone: 'amber' },
   absent: { label: 'Absent', tone: 'red' },
-  'at-capacity': { label: 'At capacity', tone: 'violet' },
 }
 
 export function AgentStateBadge({ state }: { state: AgentState }) {
@@ -31,7 +30,7 @@ export function useAgentState(agent: User): AgentState {
 
 export const SOURCE_ICON: Record<LeadSource, LucideIcon> = {
   meta_form: FileText, website: Globe, facebook_dm: MessageCircle, instagram_dm: MessageCircle,
-  facebook_comment: MessagesSquare, instagram_comment: MessagesSquare, phone: Phone, email: Mail,
+  facebook_comment: MessagesSquare, instagram_comment: MessagesSquare, phone: Phone, email: Mail, referral: Share2,
 }
 
 export function SourceBadge({ source, full }: { source: LeadSource; full?: boolean }) {
@@ -78,7 +77,7 @@ export function slaInfo(S: AppData, lead: Lead, now: number): { state: SlaState;
   return { state: 'running', counted, overdueBy }
 }
 
-/** Compact SLA indicator for tables and cards. Off-time hides the timer (P1-FR-004 states). */
+/** Compact SLA indicator for tables and cards. Off-time hides the timer (P1-FR-003 states). */
 export function SlaChip({ lead }: { lead: Lead }) {
   const d = useAppData()
   const info = slaInfo(d, lead, d.clock.now)

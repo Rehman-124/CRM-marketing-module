@@ -1,8 +1,8 @@
-import { PlugZap, FlaskConical, CircleDashed, AlertOctagon, CheckCircle2, ShieldAlert, Globe, KeyRound, LifeBuoy, ListX, Repeat2, Info } from 'lucide-react'
-import { Badge, Callout, Card, CardHeader, EmptyState, PageHeader, SimTag, th, td, cn } from '@/components/ui'
+import { PlugZap, FlaskConical, CircleDashed, AlertOctagon, CheckCircle2, ShieldAlert, Globe, KeyRound, LifeBuoy, ListX, Repeat2, Info, FileSignature, MessageCircle, HardDrive } from 'lucide-react'
+import { Badge, Callout, Card, CardHeader, EmptyState, PageHeader, PendingTag, SimTag, th, td, cn } from '@/components/ui'
 import { CompanyTag, ConnectionStateBadge } from '@/components/domain'
 import { MessagingStatusCard } from '@/components/inbox/MessagingStatusCard'
-import { useAppData } from '@/store/store'
+import { useCalmData } from '@/store/store'
 import { CONNECTION_LABEL, CONNECTION_STATE_LABEL } from '@/domain/constants'
 import { companyName } from '@/domain/engine'
 import { fmtDateTime, fmtRelative } from '@/lib/time'
@@ -27,7 +27,7 @@ const STATE_HELP: Record<ConnectionState, string> = {
 }
 
 export default function IntegrationsPage() {
-  const S = useAppData()
+  const S = useCalmData()
   const errors = S.connections.filter((c) => c.state === 'error')
   const failed = [...S.failedEvents].reverse()
   const events = [...S.externalEvents].slice(-12).reverse()
@@ -38,7 +38,7 @@ export default function IntegrationsPage() {
       <PageHeader
         title="Integrations"
         description="Which Marketing connections are confirmed, which are pending, and any failures. A failed connection must never silently lose a Lead."
-        eyebrow={<span>P3-FR-003 · TO-BE v0.2 §14</span>}
+        eyebrow={<><span>P3-FR-002 · AC-P3-002-1 … 7</span><PendingTag title="FRD v1.4 status of P3-FR-002: Pending technical validation.">Pending technical validation</PendingTag></>}
       />
 
       {errors.map((c) => (
@@ -65,7 +65,7 @@ export default function IntegrationsPage() {
 
       <Card className="mb-5">
         <CardHeader icon={PlugZap} title="Connection status" description="One row per connection per company" actions={<SimTag>Failures are simulated from the demo console</SimTag>} />
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto" tabIndex={0}>
           <table className="w-full min-w-[860px]">
             <thead className="border-b border-slate-100 bg-slate-50/60"><tr><th className={th}>Company</th><th className={th}>Connection</th><th className={th}>Proof of concept</th><th className={th}>Production state</th><th className={th}>Last event</th><th className={th}>Detail</th></tr></thead>
             <tbody className="divide-y divide-slate-100">
@@ -112,7 +112,7 @@ export default function IntegrationsPage() {
 
         <Card>
           <CardHeader icon={Repeat2} title="Recent external events" description="A repeated delivery of the same event is treated as one record, not two." actions={<Badge tone="neutral">{duplicates} with repeated deliveries</Badge>} />
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto" tabIndex={0}>
             <table className="w-full min-w-[520px]">
               <thead className="border-b border-slate-100"><tr><th className={th}>Event</th><th className={th}>Company</th><th className={th}>Outcome</th><th className={cn(th, 'text-right')}>Deliveries</th></tr></thead>
               <tbody className="divide-y divide-slate-100">
@@ -134,6 +134,24 @@ export default function IntegrationsPage() {
       </div>
 
       <div className="mt-5"><MessagingStatusCard /></div>
+
+      <Card className="mt-5">
+        <CardHeader icon={PlugZap} title="Sales integrations" description="Needed by Part 2 (Sales). None is connected in the prototype; each is simulated and labelled where it appears." />
+        <div className="grid gap-3 p-5 md:grid-cols-3">
+          {[
+            { icon: FileSignature, title: 'DigiSigner (invoice/terms)', body: 'Fill the approved template, send for signature, and receive Sent/Signed status (SAL-FR-005). The template and the reminder periods are not provided.', state: 'SAL-FR-005 · Pending technical validation' },
+            { icon: MessageCircle, title: 'Company WhatsApp', body: 'Integrated at company level; CRM ownership controls who sees each conversation (SAL-FR-001). No technical validation is described in v1.4.', state: 'Not validated' },
+            { icon: HardDrive, title: 'Private document storage', body: 'Raw passport/share-code files in a private object-storage bucket, opened only through short-lived links after a permission check (SAL-FR-008).', state: 'Not built — metadata only' },
+          ].map((c) => (
+            <div key={c.title} className="rounded-xl p-4 ring-1 ring-slate-200">
+              <div className="flex items-start justify-between gap-2"><span className="flex size-9 items-center justify-center rounded-lg bg-amber-50 text-amber-600 ring-1 ring-amber-200 ring-inset"><c.icon className="size-4" /></span><Badge tone="amber" icon={CircleDashed}>Pending</Badge></div>
+              <p className="mt-3 text-[13.5px] font-semibold text-slate-900">{c.title}</p>
+              <p className="mt-1 text-[12.5px] text-slate-600">{c.body}</p>
+              <p className="mt-2 text-[12px] text-slate-500">{c.state}</p>
+            </div>
+          ))}
+        </div>
+      </Card>
 
       <Card className="mt-5">
         <CardHeader icon={Info} title="Connection states" description="Every state a connection can show in this prototype" />

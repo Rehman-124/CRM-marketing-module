@@ -4,7 +4,7 @@ import { BarChart3, Filter, RefreshCw, CloudOff, ChevronRight, ChevronDown, Mega
 import { Badge, Button, Callout, Card, CardHeader, EmptyState, Field, Input, PageHeader, PendingTag, Segmented, Select, Skeleton, SimTag, Tabs, th, td, cn } from '@/components/ui'
 import { toast } from '@/components/ui/overlay'
 import { CompanyTag } from '@/components/domain'
-import { useAppData, useRun, useStore } from '@/store/store'
+import { useCalmData, useRun, useStore } from '@/store/store'
 import { useScope } from '@/store/hooks'
 import { refreshInsights } from '@/domain/insights'
 import { byPeriod, derived, filterInsights, filterLeads, funnel, lossBreakdown, metaApplies, metaPerformance, safeDiv, sumMoney, type MetaRow, type Period, type ReportFilters, type StatusCounts } from '@/domain/reports'
@@ -26,9 +26,9 @@ function periodLabel(p: Period, key: string) {
 const NAcell = ({ v }: { v: string }) => <span className={cn(v === NA && 'text-slate-400')}>{v}</span>
 
 export default function ReportsPage() {
-  const S = useAppData()
+  const S = useCalmData()
   const run = useRun()
-  const { visible, filter, me } = useScope()
+  const { visible, filter } = useScope()
   const setSession = useStore((s) => s.setSession)
   const now = S.clock.now
   const today = pktDateKey(now)
@@ -102,7 +102,7 @@ export default function ReportsPage() {
           </div>
           <Field label="Company">
             <Select value={filter} onChange={(e) => { setSession({ companyFilter: e.target.value as CompanyId | 'all' }); setCampaignId('all'); setAdId('all') }} className="h-8 w-40 text-[12.5px]">
-              {visible.length > 1 && <option value="all">{me.role === 'admin' ? 'All six companies' : 'All my companies'}</option>}
+              {visible.length > 1 && <option value="all">{visible.length === 6 ? 'All six companies' : 'All my companies'}</option>}
               {visible.map((c) => <option key={c} value={c}>{S.companies.find((x) => x.id === c)?.name}</option>)}
             </Select>
           </Field>
@@ -358,7 +358,7 @@ function MetaTab({ rows, periods, period, metaOk, applies, expanded, setExpanded
             </tbody>
           </table>
         </div>
-        <p className="border-t border-slate-100 px-5 py-2.5 text-[11.5px] text-slate-500">CPL = spend ÷ Leads; cost per booking = spend ÷ Booked Leads; N/A where a value cannot be calculated. CPA is not defined in the TO-BE. Reach and frequency are summed from daily rows in this simulation. Ad-set reporting is not specified.</p>
+        <p className="border-t border-slate-100 px-5 py-2.5 text-[11.5px] text-slate-500">CPL = spend ÷ Leads; cost per booking = spend ÷ Booked Leads; N/A where a value cannot be calculated. How CPL and cost per booking are calculated (Meta lead results or CRM Leads) is to be confirmed — this placeholder uses CRM Leads. CPA is not defined. Reach and frequency are summed from daily rows in this simulation. Ad-set reporting is not specified.</p>
       </Card>
       <PeriodTable period={period} periods={periods} title={`${period[0].toUpperCase()}${period.slice(1)} spend & outcomes`} cols={[
         { label: 'Spend', get: (p) => showMeta ? p.meta.spend : null, fmt: (n) => showMeta ? money(n) : '—' },
